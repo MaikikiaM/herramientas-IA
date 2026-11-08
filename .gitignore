@@ -1,0 +1,61 @@
+# ==============================================================================
+# Plantilla Maestra .gitignore (Proteccion contra archivos > 50 MB, binarios y secretos)
+# ==============================================================================
+
+# Entornos virtuales y dependencias masivas
+node_modules/
+build/
+dist/
+target/
+.gradle/
+.paper-remapped/
+
+# Binarios y compilados no versionables
+*.pdf
+*.stl
+*.3mf
+*.obj
+*.ply
+*.glb
+*.apk
+*.aab
+*.jar
+*.npy
+*.npz
+*.iso
+*.img
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Secretos y credenciales
+.env
+.env.*
+*token*
+*.key
+*.pem
+*.p12
+
+# Archivos de depuracion LaTeX
+*.aux
+*.log
+*.out
+*.toc
+*.nav
+*.snm
+*.vrb
+*.synctex.gz
+
+# Archivos temporales de sistema
+.DS_Store
+Thumbs.db
+*.tmp
+*.temp
+*~
+
+# Especificas del proyecto

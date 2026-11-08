@@ -1,0 +1,16 @@
+================================================================================
+SESIÓN: 08/11/2026 - INICIALIZACIÓN Y CONFIGURACIÓN GLOBAL DE HERRAMIENTAS-IA
+================================================================================
+
+**Prompts del usuario:**
+- "Adelante /boost /goal"
+
+**Acciones aplicadas:**
+1. Creación de la estructura del repositorio central Herramientas-IA: `global/`, `tools/`, `plantillas/`, `docs/ia/`.
+2. Redacción e instalación del protocolo unificado `global/AGENTS.md` (cabecera temporal obligatoria, memoria en dos niveles, git-sync proactivo, bloqueo estricto de directorios privados).
+3. Configuración de hooks de seguridad (`guardia-rutas.ps1` en PreToolUse y `autosave.ps1` en Stop).
+4. Catálogo de 8 habilidades maestras en `global/skills/` (latex-pdf, md-a-pdf, registro-y-estado, git-sync, visor-3d-html, triada-peak, paper-deploy, flash-safety).
+5. Migración de herramientas activas: `Monitor-AI-Tokens`, `md_to_pdf_converter.py`, calculadoras de precios IA y generador de visores 3D.
+6. Actualización de los accesos directos de Escritorio hacia la nueva ubicación.
+7. Instalación del protocolo global en `~/.gemini/config/AGENTS.md` y `~/.gemini/config/hooks.json`.
+================================================================================

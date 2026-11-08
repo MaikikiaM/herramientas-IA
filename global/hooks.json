@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command|read_file|write_file|replace_file_content",
+        "action": "powershell -ExecutionPolicy Bypass -File C:\\Users\\migue\\Antigravity\\Herramientas-IA\\global\\scripts\\guardia-rutas.ps1 -CommandText \"{{tool_input}}\""
+      }
+    ],
+    "Stop": [
+      {
+        "action": "powershell -ExecutionPolicy Bypass -File C:\\Users\\migue\\Antigravity\\Herramientas-IA\\global\\scripts\\autosave.ps1"
+      }
+    ]
+  }
+}

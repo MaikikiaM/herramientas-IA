@@ -1,0 +1,12 @@
+================================================================================
+SESIÓN: DD/MM/AAAA - INICIALIZACIÓN DEL PROYECTO
+================================================================================
+
+**Prompts del usuario:**
+- "<prompt inicial>"
+
+**Acciones aplicadas:**
+1. Inicialización de la estructura del repositorio y espacio de trabajo.
+2. Configuración de reglas y plantillas.
+3. Primer commit limpio.
+================================================================================
