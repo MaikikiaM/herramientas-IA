@@ -59,3 +59,7 @@ Thumbs.db
 *~
 
 # Especificas del proyecto
+!tools/Monitor-AI-Tokens/
+tools/Monitor-AI-Tokens/__pycache__/
+tools/Monitor-AI-Tokens/*.pyc
+tools/Monitor-AI-Tokens/reporte_consumo.html

@@ -14,3 +14,25 @@ SESIÓN: 08/11/2026 - INICIALIZACIÓN Y CONFIGURACIÓN GLOBAL DE HERRAMIENTAS-IA
 6. Actualización de los accesos directos de Escritorio hacia la nueva ubicación.
 7. Instalación del protocolo global en `~/.gemini/config/AGENTS.md` y `~/.gemini/config/hooks.json`.
 ================================================================================
+
+================================================================================
+SESIÓN: 13/11/2026 - SOPORTE GEMINI 4 HYDROGEN EN MONITOR-AI-TOKENS
+================================================================================
+
+**Prompt del usuario:**
+- Incorporar datos de Gemini 4 Hydrogen al monitor de tokens manteniendo todos los modelos anteriores en métricas, gráficas y leyendas.
+
+**Decisiones y tarifas aplicadas:**
+- Tarifa oficial API Gemini 4 Hydrogen (`gemini_hydrogen` en `pricing.json`): $1.50 / 1M input (incluye caché miss), $7.50 / 1M output (incluye tokens de razonamiento XHigh/High) y $0.075 / 1M caché implícito (-95%).
+- Preservación completa de series, leyendas, tarjetas y tablas para Gemini 3.8 Flash, Gemini Pro, Gemini 4 Argon y Gemini 4 Hydrogen (incluyendo herencia de modelo en subagentes sin `<USER_SETTINGS_CHANGE>` propio).
+
+**Archivos modificados / configurados:**
+- `tools/Monitor-AI-Tokens/pricing.json`: añadida entrada `gemini_hydrogen`.
+- `tools/Monitor-AI-Tokens/monitor.py`: detección y desglose completo CLI/HTML para Hydrogen junto con Flash, Argon y Pro, soporte `--no-open` y ventana semanal ajustada a la última semana activa (`initial_week_start`).
+- `tools/Monitor-AI-Tokens/README.md`: actualizada la lista de modelos en la sección de ROI.
+- `.gitignore`: desbloqueado tracking del código fuente de `tools/Monitor-AI-Tokens/` manteniendo ignorados `__pycache__/`, `*.pyc` y `reporte_consumo.html`.
+- `docs/ia/ESTADO.md`: estado actualizado al 13/11/2026.
+
+**Verificación:**
+- `py_compile`, `monitor.py --all --html --no-open --no-color`, `monitor.py --month --no-color`, validación JSON del HTML (`chartDataPayload`) y `node --check` ejecutados con salida 0 (86 sesiones, 6 con Hydrogen, 7 con Argon).
+================================================================================
