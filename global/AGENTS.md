@@ -22,7 +22,9 @@ Cada proyecto mantendrá dos niveles de contexto persistente:
    - El agente lo lee siempre al inicio de cada sesión para adquirir contexto instantáneo.
 2. **`registro.txt` (Nivel 2 — Historial Continuo Infinito):**
    - Bitácora cronológica e inmutable en la raíz de cada proyecto.
-   - Contiene bloques fechados (`SESIÓN: DD/MM/AAAA - TÍTULO`) con prompts del usuario, decisiones técnicas tomadas, archivos creados/modificados y resultados de pruebas.
+   - Contiene bloques fechados (`SESIÓN: DD/MM/AAAA - TÍTULO`) que **DEBEN comenzar obligatoriamente** por el apartado `- Prompts literales del usuario:` copiando **palabra por palabra y sin editar ni abreviar** todos los mensajes enviados por el usuario en la sesión con su fecha y hora (`  * [DD/MM/AAAA HH:MM]: "<texto literal exacto>"`).
+   - **PROHIBIDO** parafrasear los prompts o sustituirlos por un resumen u objetivo. Si se desea añadir un resumen sintético (`- Objetivo: ...`), este es **opcional** y **solo puede aparecer después** de los prompts literales, jamás en su lugar. Si la sesión fue compactada, recuperar el texto exacto desde `transcript_full.jsonl` / `transcript.jsonl`.
+   - A continuación se documentan las decisiones técnicas tomadas, archivos creados/modificados y resultados verificados de pruebas.
    - Al abrir sesión, el agente lee las últimas 80 líneas para contexto inmediato y utiliza búsquedas específicas (`Select-String` / `grep`) sobre el histórico completo cuando necesita recordar decisiones pasadas.
 
 ---

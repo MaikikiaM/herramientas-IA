@@ -19,8 +19,9 @@ SESIÓN: 08/11/2026 - INICIALIZACIÓN Y CONFIGURACIÓN GLOBAL DE HERRAMIENTAS-IA
 SESIÓN: 13/11/2026 - SOPORTE GEMINI 4 HYDROGEN EN MONITOR-AI-TOKENS
 ================================================================================
 
-**Prompt del usuario:**
-- Incorporar datos de Gemini 4 Hydrogen al monitor de tokens manteniendo todos los modelos anteriores en métricas, gráficas y leyendas.
+- Prompts literales del usuario:
+  * [13/11/2026 14:18]: "Hay que editar el tema del monitor de tokens para que acepte datos de gemini 4 hydrogen tb. Acaba de salir y no esta incluido. Edita el sistema para acoger al gemini 4 hrydrogen sin tampoco echar al resto de modelos anteriores (en las graficas aun caben en la leyenda unos modelos mas)"
+- Objetivo: Incorporar datos de Gemini 4 Hydrogen al monitor de tokens manteniendo todos los modelos anteriores en métricas, gráficas y leyendas.
 
 **Decisiones y tarifas aplicadas:**
 - Tarifa oficial API Gemini 4 Hydrogen (`gemini_hydrogen` en `pricing.json`): $1.50 / 1M input (incluye caché miss), $7.50 / 1M output (incluye tokens de razonamiento XHigh/High) y $0.075 / 1M caché implícito (-95%).
@@ -41,9 +42,11 @@ SESIÓN: 13/11/2026 - SOPORTE GEMINI 4 HYDROGEN EN MONITOR-AI-TOKENS
 SESIÓN: 14/11/2026 - ROI DINÁMICO POR MESES Y REDISEÑO HISTÓRICO DIARIO
 ================================================================================
 
-**Prompt del usuario:**
-- Ajustar la rentabilidad/ROI para multiplicar la cuota mensual por el número real de meses (4 meses = 87,96 € en lugar de 21,99 €).
-- Corregir el error de la gráfica de histórico diario (valor Flash inflado en días de uso Hydrogen) y rediseñar su estética manteniendo líneas suavizadas sobre todos los días.
+- Prompts literales del usuario:
+  * [14/11/2026 13:06]: "En la rentabilidad lo tienes en cuenta como si solo fuera un mes, cuando ahora son 4. Pon que, en funcion del numero de meses, el valor sea uno u otro. Ademas, la grafica de historico diario no me convence ya. Es muy poco clara y tienen errores como el del valor flash aun ahora que solo uso hydrogen. Arregla un poco toda la estetica de la grafica manteniendo solamente la idea general de tener todos los dias y que sean lineas en vez de barras (dispersion unida suavizada)"
+- Objetivo:
+  * Ajustar la rentabilidad/ROI para multiplicar la cuota mensual por el número real de meses (4 meses = 87,96 € en lugar de 21,99 €).
+  * Corregir el error de la gráfica de histórico diario (valor Flash inflado en días de uso Hydrogen) y rediseñar su estética manteniendo líneas suavizadas sobre todos los días.
 
 **Cambios implementados (`tools/Monitor-AI-Tokens/monitor.py`):**
 - `calculate_costs(..., num_months=1)` y `compute_analytics`: cálculo dinámico de `num_months` (meses activos con uso, actualmente 4) y `total_sub_eur` (`num_months × 21,99 €/mes`), actualizando ROI, multiplicador, ahorro neto, KPI card, badge de cabecera y pie total en tabla mensual / CLI (`--all` usa N meses; `--month` usa 1 mes).
@@ -53,4 +56,18 @@ SESIÓN: 14/11/2026 - ROI DINÁMICO POR MESES Y REDISEÑO HISTÓRICO DIARIO
 
 **Verificación:**
 - `py_compile`, `monitor.py --all --html --no-open --no-color` (4 meses = 87,96 €, ROI 623,0%, 6,2x), `monitor.py --month --no-color` (1 mes = 21,99 €, ROI 683,5%), validación sintética multi-mes (1m/3m) y `node --check` sobre el JS embebido en `reporte_consumo.html` completados con salida 0.
+================================================================================
+
+================================================================================
+SESIÓN: 15/11/2026 - NORMALIZACIÓN DE REGLAS Y REGISTRO LITERAL DE PROMPTS
+================================================================================
+- Prompts literales del usuario:
+  * [15/11/2026 00:38]: "Cometiste un error al hacer todo el tema de la reorganización, sobre todo con el registro de las cosas. Lo que están haciendo en los diferentes proyectos, que ya lo he corregido en algún proyecto como es Apps, simplemente lo que hacen es el objetivo del prompt lo resumen, el que digo yo, y lo ponen como un objetivo y entonces dicen lo que han hecho. Yo quiero que literalmente pongan se ponga lo que yo he dicho. Y si eso después que resuman el objetivo, resuman lo que he dicho, pero debe aparecer lo que he dicho yo tal cual. Y no entiendo que estén ahora haciéndolo mal cuando, por ejemplo, justamente en Apps, SpotiLocal lo registraba correctamente. Y, por ejemplo, Minecraft, aunque no he vuelto to a trabajar en ello, el proyecto de Minecraft del servidor también lo registraba tal cual, que yo sepa. Entonces, mira a ver qué pasa y actualiza todos los proyectos. Obviamente no te cargues nada."
+- Objetivo: Corregir la regresión de registro tras la reorganización del 08/11/2026 para exigir prompts literales palabra por palabra en todos los proyectos, actualizar las reglas globales/plantillas y restaurar prompts literales históricos.
+
+**Cambios aplicados:**
+- `C:\Users\migue\.gemini\config\AGENTS.md` y `global/AGENTS.md`: reforzada la regla obligatoria de abrir cada sesión de `registro.txt` con `- Prompts literales del usuario:` palabra por palabra antes de cualquier `- Objetivo:` opcional (prohibido resumir o sustituir).
+- `global/skills/registro-y-estado.md`, `plantillas/AGENTS.md` y `plantillas/registro.txt`: actualizados con el formato estricto y recuperación desde `transcript_full.jsonl` / `transcript.jsonl` tras compactaciones.
+- `AGENTS.md` y `docs/ia/ESTADO.md`: creado `Herramientas-IA/AGENTS.md` y actualizado `ESTADO.md` al 15/11/2026.
+- `registro.txt`: recuperados e insertados los prompts literales exactos de las sesiones del 13/11/2026 y 14/11/2026 (`Monitor-AI-Tokens`) preservando todo el historial previo.
 ================================================================================
