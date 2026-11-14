@@ -564,7 +564,7 @@ def scan_antigravity_usage(brain_dir=None):
 
     return sessions
 
-def calculate_costs(input_tokens, output_tokens, cached_tokens, pricing):
+def calculate_costs(input_tokens, output_tokens, cached_tokens, pricing, num_months=1):
     rate_eur = pricing.get("usd_to_eur_rate", 0.92)
     models = pricing.get("models", {})
 
@@ -590,6 +590,8 @@ def calculate_costs(input_tokens, output_tokens, cached_tokens, pricing):
     hydrogen_cost_usd, hydrogen_cost_eur, cache_savings_hydrogen_eur = model_cost("gemini_hydrogen", 1.50, 7.50, 0.075)
 
     sub_eur = pricing.get("subscription", {}).get("monthly_cost_eur", 21.99)
+    eff_months = max(1, num_months)
+    period_sub_eur = sub_eur * eff_months
 
     return {
         "pro_usd": pro_cost_usd,
@@ -605,14 +607,16 @@ def calculate_costs(input_tokens, output_tokens, cached_tokens, pricing):
         "cache_savings_argon_eur": cache_savings_argon_eur,
         "cache_savings_hydrogen_eur": cache_savings_hydrogen_eur,
         "subscription_eur": sub_eur,
-        "savings_pro_eur": pro_cost_eur - sub_eur,
-        "savings_flash_eur": flash_cost_eur - sub_eur,
-        "savings_argon_eur": argon_cost_eur - sub_eur,
-        "savings_hydrogen_eur": hydrogen_cost_eur - sub_eur,
-        "roi_pro_pct": (pro_cost_eur / sub_eur * 100) if sub_eur > 0 else 0,
-        "roi_flash_pct": (flash_cost_eur / sub_eur * 100) if sub_eur > 0 else 0,
-        "roi_argon_pct": (argon_cost_eur / sub_eur * 100) if sub_eur > 0 else 0,
-        "roi_hydrogen_pct": (hydrogen_cost_eur / sub_eur * 100) if sub_eur > 0 else 0
+        "period_subscription_eur": period_sub_eur,
+        "num_months": eff_months,
+        "savings_pro_eur": pro_cost_eur - period_sub_eur,
+        "savings_flash_eur": flash_cost_eur - period_sub_eur,
+        "savings_argon_eur": argon_cost_eur - period_sub_eur,
+        "savings_hydrogen_eur": hydrogen_cost_eur - period_sub_eur,
+        "roi_pro_pct": (pro_cost_eur / period_sub_eur * 100) if period_sub_eur > 0 else 0,
+        "roi_flash_pct": (flash_cost_eur / period_sub_eur * 100) if period_sub_eur > 0 else 0,
+        "roi_argon_pct": (argon_cost_eur / period_sub_eur * 100) if period_sub_eur > 0 else 0,
+        "roi_hydrogen_pct": (hydrogen_cost_eur / period_sub_eur * 100) if period_sub_eur > 0 else 0
     }
 
 def calculate_bucket_breakdown(data_dict, pricing):
@@ -1108,8 +1112,18 @@ def compute_analytics(sessions, pricing):
         "pro_in": pro_stats["tot_in"], "pro_out": pro_stats["tot_out"], "pro_cache": pro_stats["tot_cache"],
     }
     global_breakdown = calculate_bucket_breakdown(global_raw_bucket, pricing)
+    active_months_count = sum(
+        1 for v in monthly_stats.values()
+        if (v["in"] + v["out"] + v["cache"]) > 0 or len(v["sessions"]) > 0
+    )
+    num_months = max(1, active_months_count if active_months_count > 0 else len(monthly_stats))
     sub_eur = pricing.get("subscription", {}).get("monthly_cost_eur", 21.99)
-    global_breakdown["real_roi_pct"] = (global_breakdown["real_eur"] / sub_eur * 100) if sub_eur > 0 else 0
+    total_sub_eur = round(sub_eur * num_months, 2)
+    global_breakdown["num_months"] = num_months
+    global_breakdown["sub_eur_total"] = total_sub_eur
+    global_breakdown["real_savings_eur"] = global_breakdown["real_eur"] - total_sub_eur
+    global_breakdown["real_roi_pct"] = (global_breakdown["real_eur"] / total_sub_eur * 100) if total_sub_eur > 0 else 0
+    global_breakdown["real_mult"] = (global_breakdown["real_eur"] / total_sub_eur) if total_sub_eur > 0 else 0
 
     return {
         "daily": daily_stats,
@@ -1131,6 +1145,9 @@ def compute_analytics(sessions, pricing):
         "hydrogen": hydrogen_stats,
         "pro": pro_stats,
         "global_breakdown": global_breakdown,
+        "num_months": num_months,
+        "monthly_sub_eur": sub_eur,
+        "total_sub_eur": total_sub_eur,
         "cur_week_key": cur_week_key
     }
 
@@ -1147,6 +1164,7 @@ def print_cli_report(sessions, pricing, filter_month=False):
         sessions_count = len(m_st["sessions"])
         period_breakdown = calculate_bucket_breakdown(m_st, pricing)
         period_title = f"Mes en curso ({now.strftime('%B %Y')})"
+        num_months = 1
     else:
         tot_in = analytics["tot_in_all"]
         tot_out = analytics["tot_out_all"]
@@ -1154,12 +1172,14 @@ def print_cli_report(sessions, pricing, filter_month=False):
         sessions_count = len(sessions)
         period_breakdown = analytics["global_breakdown"]
         period_title = "Histórico Total Acumulado"
+        num_months = analytics.get("num_months", 1)
 
     total_tokens = tot_in + tot_out + tot_cache
-    costs = calculate_costs(tot_in, tot_out, tot_cache, pricing)
+    costs = calculate_costs(tot_in, tot_out, tot_cache, pricing, num_months=num_months)
     sub_eur = costs["subscription_eur"]
+    period_sub_eur = costs["period_subscription_eur"]
     real_eur = period_breakdown["real_eur"]
-    real_roi_pct = (real_eur / sub_eur * 100) if sub_eur > 0 else 0
+    real_roi_pct = (real_eur / period_sub_eur * 100) if period_sub_eur > 0 else 0
 
     print()
     print(f"{Colors.BOLD}{Colors.CYAN}═════════════════════════════════════════════════════════════════════════════════════════{Colors.RESET}")
@@ -1219,15 +1239,17 @@ def print_cli_report(sessions, pricing, filter_month=False):
         print(f"  • 💰 {Colors.BOLD}Valor API comercial Hydrogen{Colors.RESET}: {Colors.YELLOW}{hyd_data['costs']['hydrogen_eur']:.2f} €{Colors.RESET} {Colors.DIM}[Tarifa oficial $1.50 in / $7.50 out / $0.075 caché]{Colors.RESET}")
         print(f"  {Colors.DIM}↳ Razonamiento XHigh/High incluido en tokens de salida; caché implícito con -95% de ahorro.{Colors.RESET}")
 
-    print(f"\n{Colors.BOLD}🏆 AMORTIZACIÓN REAL DE SUSCRIPCIÓN (vs cuota fija de {sub_eur:.2f} € / mes):{Colors.RESET}")
-    real_savings = real_eur - sub_eur
+    meses_txt = "1 mes" if num_months == 1 else f"{num_months} meses"
+    cuota_desc = f"{period_sub_eur:.2f} € ({meses_txt} × {sub_eur:.2f} €/mes)" if num_months > 1 else f"{sub_eur:.2f} € / mes"
+    print(f"\n{Colors.BOLD}🏆 AMORTIZACIÓN REAL DE SUSCRIPCIÓN (vs cuota de {cuota_desc}):{Colors.RESET}")
+    real_savings = real_eur - period_sub_eur
     if real_savings >= 0:
         print(f"  • {Colors.BOLD}Estado (Mix Real){Colors.RESET}  : {Colors.GREEN}¡Amortizado! +{real_savings:.2f} € a tu favor ({real_roi_pct:.1f}%){Colors.RESET} 🎉")
-        print(f"  • {Colors.BOLD}Multiplicador{Colors.RESET}      : Has obtenido {real_roi_pct/100:.1f}x veces el valor de tu suscripción ({costs['flash_eur']:.2f} € ref. 100% Flash)")
+        print(f"  • {Colors.BOLD}Multiplicador{Colors.RESET}      : Has obtenido {real_roi_pct/100:.1f}x veces el valor de tu suscripción ({period_sub_eur:.2f} € pagados)")
     else:
         falta = abs(real_savings)
-        print(f"  • {Colors.BOLD}Consumo vs Cuota{Colors.RESET}   : {Colors.CYAN}{real_eur:.2f} €{Colors.RESET} de {sub_eur:.2f} € ({Colors.BOLD}{real_roi_pct:.1f}%{Colors.RESET} amortizado)")
-        print(f"  • {Colors.BOLD}Margen de consumo{Colors.RESET}  : Te faltan {falta:.2f} € en llamadas para igualar los {sub_eur:.2f} €")
+        print(f"  • {Colors.BOLD}Consumo vs Cuota{Colors.RESET}   : {Colors.CYAN}{real_eur:.2f} €{Colors.RESET} de {period_sub_eur:.2f} € ({Colors.BOLD}{real_roi_pct:.1f}%{Colors.RESET} amortizado)")
+        print(f"  • {Colors.BOLD}Margen de consumo{Colors.RESET}  : Te faltan {falta:.2f} € en llamadas para igualar los {period_sub_eur:.2f} €")
 
     # Tabla últimos 7 días activos
     sorted_days = sorted(analytics["daily"].keys(), reverse=True)[:7]
@@ -1266,6 +1288,12 @@ def print_cli_report(sessions, pricing, filter_month=False):
                 print(f"  {m_label:<12} | {sess_cnt:<8} | {format_tokens(m_tot):<13} | {bd['real_eur']:12.2f} € | {m_roi:9.1f}%")
             else:
                 print(f"  {m_label:<12} | {sess_cnt:<8} | {'(Pre-telemetría)':<13} | {'(Sin métricas)':<15} | {step_cnt:,} pasos")
+        g_bd_cli = analytics["global_breakdown"]
+        tot_cli_months = analytics.get("num_months", len(analytics["monthly"]))
+        tot_cli_sub = analytics.get("total_sub_eur", sub_eur * tot_cli_months)
+        tot_cli_label = f"TOTAL ({tot_cli_months}m)"
+        print(f"  {'-'*12}-+-{'-'*8}-+-{'-'*13}-+-{'-'*15}-+-{'-'*12}")
+        print(f"  {tot_cli_label:<12} | {len(sessions):<8} | {format_tokens(analytics['tot_tokens_all']):<13} | {g_bd_cli['real_eur']:12.2f} € | {g_bd_cli['real_roi_pct']:9.1f}% ({tot_cli_sub:.2f} €)")
 
     # Desglose por Workspace
     print(f"\n{Colors.BOLD}📁 DESGLOSE POR PROYECTO / WORKSPACE (Estructura Oficial Google):{Colors.RESET}")
@@ -1305,9 +1333,11 @@ def generate_html_report(sessions, pricing, output_path=None):
     tot_out_all = analytics["tot_out_all"]
     tot_cache_all = analytics["tot_cache_all"]
     tot_tokens_all = analytics["tot_tokens_all"]
-    costs_all = calculate_costs(tot_in_all, tot_out_all, tot_cache_all, pricing)
+    num_months = analytics.get("num_months", 1)
+    costs_all = calculate_costs(tot_in_all, tot_out_all, tot_cache_all, pricing, num_months=num_months)
     g_bd = analytics["global_breakdown"]
     sub_eur = costs_all["subscription_eur"]
+    total_sub_eur = analytics.get("total_sub_eur", costs_all["period_subscription_eur"])
 
     month_names_es = {
         "01": "Ene", "02": "Feb", "03": "Mar", "04": "Abr",
@@ -1599,34 +1629,49 @@ def generate_html_report(sessions, pricing, output_path=None):
         })
     initial_week_start = max(0, min(52 - 30, last_active_week_idx - 29))
 
-    # 8. Datos de todos los días registrados para el gráfico de dispersión (scatter)
+    # 8. Datos continuos de todos los días naturales (con relleno 0) para línea suavizada sin distorsiones temporales
     scatter_days_data = []
-    for d_str in sorted_all_days:
-        st = analytics["daily"][d_str]
-        tot = st["in"] + st["out"] + st["cache"]
-        c = calculate_costs(st["in"], st["out"], st["cache"], pricing)
-        pt = extract_chart_point(st)
-        top_ws = max(st["workspaces"].items(), key=lambda x: x[1])[0] if st["workspaces"] else "General"
-        sess_cnt = len(st["sessions"]) if isinstance(st["sessions"], set) else st["sessions"]
-        dt_obj = datetime.strptime(d_str, "%Y-%m-%d")
-        scatter_days_data.append({
-            "date": d_str,
-            "label": dt_obj.strftime("%d %b"),
-            "full_date": dt_obj.strftime("%d/%m/%Y"),
-            "tokens": round(tot / 1_000_000, 2),
-            "cache": round(st["cache"] / 1_000_000, 2),
-            "new": round((st["in"] + st["out"]) / 1_000_000, 2),
-            "cost": round(c["flash_eur"], 2),
-            "real_cost": pt["real_cost"],
-            "top_ws": top_ws,
-            "sessions": sess_cnt,
-            "argon_tokens": pt["argon_tokens"],
-            "argon_cost": pt["argon_cost"],
-            "hydrogen_tokens": pt["hydrogen_tokens"],
-            "hydrogen_cost": pt["hydrogen_cost"],
-            "pro_tokens": pt["pro_tokens"],
-            "pro_cost": pt["pro_cost"]
-        })
+    if sorted_all_days:
+        first_sc_dt = datetime.strptime(sorted_all_days[0], "%Y-%m-%d").date()
+        last_sc_dt = max(datetime.strptime(sorted_all_days[-1], "%Y-%m-%d").date(), now.date())
+        cur_sc_dt = first_sc_dt
+        empty_day_bucket = {
+            "in": 0, "out": 0, "cache": 0,
+            "argon_in": 0, "argon_out": 0, "argon_cache": 0,
+            "hyd_in": 0, "hyd_out": 0, "hyd_cache": 0,
+            "pro_in": 0, "pro_out": 0, "pro_cache": 0,
+            "sessions": set(), "workspaces": {}
+        }
+        while cur_sc_dt <= last_sc_dt:
+            d_str = cur_sc_dt.strftime("%Y-%m-%d")
+            st = analytics["daily"].get(d_str, empty_day_bucket)
+            tot = st["in"] + st["out"] + st["cache"]
+            pt = extract_chart_point(st)
+            top_ws = max(st["workspaces"].items(), key=lambda x: x[1])[0] if st["workspaces"] else "Sin actividad"
+            sess_cnt = len(st["sessions"]) if isinstance(st["sessions"], set) else st["sessions"]
+            m_es = month_names_es.get(cur_sc_dt.strftime("%m"), cur_sc_dt.strftime("%b"))
+            scatter_days_data.append({
+                "date": d_str,
+                "label": f"{cur_sc_dt.strftime('%d')} {m_es}",
+                "full_date": cur_sc_dt.strftime("%d/%m/%Y"),
+                "tokens": round(tot / 1_000_000, 2),
+                "flash_tokens": round(pt["cache"] + pt["new"], 2),
+                "cache": pt["cache"],
+                "new": pt["new"],
+                "all_cache": round(st["cache"] / 1_000_000, 2),
+                "all_new": round((st["in"] + st["out"]) / 1_000_000, 2),
+                "cost": pt["cost"],
+                "real_cost": pt["real_cost"],
+                "top_ws": top_ws,
+                "sessions": sess_cnt,
+                "argon_tokens": pt["argon_tokens"],
+                "argon_cost": pt["argon_cost"],
+                "hydrogen_tokens": pt["hydrogen_tokens"],
+                "hydrogen_cost": pt["hydrogen_cost"],
+                "pro_tokens": pt["pro_tokens"],
+                "pro_cost": pt["pro_cost"]
+            })
+            cur_sc_dt += timedelta(days=1)
 
     # 9. Reparto por modelo para widget secundario
     model_split_items = [
@@ -1719,6 +1764,8 @@ def generate_html_report(sessions, pricing, output_path=None):
     h_in, h_out, h_cac = h_cfg.get("cost_per_million_input_usd", 1.50), h_cfg.get("cost_per_million_output_usd", 7.50), h_cfg.get("cost_per_million_cached_usd", 0.075)
 
     real_mult = (g_bd["real_roi_pct"] / 100.0) if g_bd["real_roi_pct"] else 0.0
+    real_savings = g_bd.get("real_savings_eur", g_bd["real_eur"] - total_sub_eur)
+    meses_label = "1 mes" if num_months == 1 else f"{num_months} meses"
     arg_stat = analytics["argon"]
     hyd_stat = analytics["hydrogen"]
 
@@ -2169,7 +2216,7 @@ def generate_html_report(sessions, pricing, output_path=None):
                 <p class="subtitle">Histórico diario, semanal y mensual · Gemini 3.8 Flash, Gemini Pro, Gemini 4 Argon y Gemini 4 Hydrogen</p>
             </div>
             <div>
-                <span class="badge badge-success">Suscripción: {costs_m['subscription_eur']:.2f} € / mes</span>
+                <span class="badge badge-success">Suscripción: {sub_eur:.2f} €/mes · {meses_label} ({total_sub_eur:.2f} € acum.)</span>
             </div>
         </header>
 
@@ -2229,10 +2276,10 @@ def generate_html_report(sessions, pricing, output_path=None):
                 <div class="fitness-sub">Valor: {hyd_stat['costs']['hydrogen_eur']:.2f} € · {hyd_stat['cur_week_key']}: {format_tokens(hyd_stat['week_tokens'])} · Desde {hyd_stat['first_date']}</div>
             </div>
 
-            <div class="fitness-card" style="border-color: rgba(244, 114, 182, 0.4); background: linear-gradient(145deg, #1e293b, #3b0764);" title="Coste real ponderado combinando Flash + Argon + Hydrogen según el modelo usado en cada paso">
+            <div class="fitness-card" style="border-color: rgba(244, 114, 182, 0.4); background: linear-gradient(145deg, #1e293b, #3b0764);" title="Coste real ponderado combinando Flash + Argon + Hydrogen · Ahorro neto: {'+' if real_savings >= 0 else ''}{real_savings:.2f} € frente a {total_sub_eur:.2f} € ({num_months} × {sub_eur:.2f} €/mes)">
                 <div class="fitness-label" style="color: #f472b6;">💎 Valor Real Mix (API)</div>
                 <div class="fitness-val" style="color: #f472b6;">{g_bd['real_eur']:.2f} €</div>
-                <div class="fitness-sub">ROI: {g_bd['real_roi_pct']:.0f}% ({real_mult:.1f}x sobre {sub_eur:.2f} €/mes)</div>
+                <div class="fitness-sub">ROI: {g_bd['real_roi_pct']:.0f}% ({real_mult:.1f}x sobre {total_sub_eur:.2f} € · {meses_label})</div>
             </div>
         </div>
 
@@ -2319,7 +2366,7 @@ def generate_html_report(sessions, pricing, output_path=None):
                         <th>Salida</th>
                         <th>Caché</th>
                         <th>Total Tokens</th>
-                        <th>Valor 3.8 Flash</th>
+                        <th>Ref. 100% Flash</th>
                         <th>Valor Real Mix</th>
                     </tr>
                 </thead>
@@ -2340,7 +2387,7 @@ def generate_html_report(sessions, pricing, output_path=None):
                         <th>Salida</th>
                         <th>Caché</th>
                         <th>Total Tokens</th>
-                        <th>Valor 3.8 Flash</th>
+                        <th>Ref. 100% Flash</th>
                         <th>Valor Real Mix</th>
                     </tr>
                 </thead>
@@ -2361,7 +2408,7 @@ def generate_html_report(sessions, pricing, output_path=None):
                         <th>Salida</th>
                         <th>Caché</th>
                         <th>Total Tokens</th>
-                        <th>Valor 3.8 Flash</th>
+                        <th>Ref. 100% Flash</th>
                         <th>Valor Real Mix</th>
                         <th>% Amortización</th>
                         <th>Tipo Registro</th>
@@ -2370,6 +2417,20 @@ def generate_html_report(sessions, pricing, output_path=None):
                 <tbody>
                     {"".join(monthly_rows) if monthly_rows else "<tr><td colspan='10'>No hay registros mensuales.</td></tr>"}
                 </tbody>
+                <tfoot>
+                    <tr style="background: #1a2234; font-weight: bold; border-top: 2px solid var(--primary);">
+                        <td>TOTAL ({meses_label})</td>
+                        <td>{len(sessions)}</td>
+                        <td>{format_tokens(tot_in_all)}</td>
+                        <td>{format_tokens(tot_out_all)}</td>
+                        <td>{format_tokens(tot_cache_all)}</td>
+                        <td><strong style="color: var(--primary);">{format_tokens(tot_tokens_all)}</strong></td>
+                        <td><span class="badge badge-success">{costs_all['flash_eur']:.2f} €</span></td>
+                        <td><span class="badge badge-hydrogen">{g_bd['real_eur']:.2f} €</span></td>
+                        <td><strong style="color: {'var(--green)' if g_bd['real_roi_pct'] >= 100 else 'var(--yellow)'};">{g_bd['real_roi_pct']:.1f}%</strong></td>
+                        <td><span class="badge badge-ws">{total_sub_eur:.2f} € cuota</span></td>
+                    </tr>
+                </tfoot>
             </table>
         </div>
 
@@ -2675,6 +2736,38 @@ def generate_html_report(sessions, pricing, output_path=None):
             return datasets;
         }}
 
+        function makeAreaGradient(context, rgbStr, topAlpha) {{
+            const chart = context.chart;
+            const {{ ctx: c, chartArea }} = chart;
+            if (!chartArea) return 'rgba(' + rgbStr + ', 0.08)';
+            const grad = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+            grad.addColorStop(0, 'rgba(' + rgbStr + ', ' + topAlpha + ')');
+            grad.addColorStop(0.75, 'rgba(' + rgbStr + ', ' + (topAlpha * 0.18) + ')');
+            grad.addColorStop(1, 'rgba(' + rgbStr + ', 0)');
+            return grad;
+        }}
+
+        const verticalCrosshairPlugin = {{
+            id: 'verticalCrosshair',
+            afterDatasetsDraw(chart) {{
+                if (chart.config.type !== 'line') return;
+                const active = chart.tooltip && chart.tooltip.getActiveElements ? chart.tooltip.getActiveElements() : [];
+                if (!active.length || !chart.chartArea) return;
+                const x = active[0].element.x;
+                const {{ top, bottom }} = chart.chartArea;
+                const c = chart.ctx;
+                c.save();
+                c.beginPath();
+                c.moveTo(x, top);
+                c.lineTo(x, bottom);
+                c.lineWidth = 1;
+                c.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+                c.setLineDash([4, 4]);
+                c.stroke();
+                c.restore();
+            }}
+        }};
+
         function initTimelineChart(periodKey) {{
             const ctx = document.getElementById('timelineChart').getContext('2d');
 
@@ -2688,133 +2781,108 @@ def generate_html_report(sessions, pricing, output_path=None):
                 if (weeklyNav) weeklyNav.style.display = 'none';
                 const sData = chartDataPayload.scatter_days;
                 const labels = sData.map(d => d.label);
-                const tokenPoints = sData.map(d => d.tokens);
-                const costPoints = sData.map(d => d.cost);
+                const flashTokenPoints = sData.map(d => d.flash_tokens ?? (d.cache + d.new));
                 const argonTokenPoints = sData.map(d => d.argon_tokens || 0);
-                const argonCostPoints = sData.map(d => d.argon_cost || 0);
                 const hydTokenPoints = sData.map(d => d.hydrogen_tokens || 0);
-                const hydCostPoints = sData.map(d => d.hydrogen_cost || 0);
                 const proTokenPoints = sData.map(d => d.pro_tokens || 0);
-                const proCostPoints = sData.map(d => d.pro_cost || 0);
+                const realCostPoints = sData.map(d => d.real_cost ?? d.cost ?? 0);
 
                 const scatterDatasets = [
                     {{
-                        label: 'Tokens Diarios Totales (M)',
-                        data: tokenPoints,
-                        backgroundColor: 'rgba(56, 189, 248, 0.12)',
+                        label: '⚡ Gemini 3.x Flash (M)',
+                        data: flashTokenPoints,
+                        backgroundColor: context => makeAreaGradient(context, '56, 189, 248', 0.24),
                         borderColor: '#38bdf8',
-                        borderWidth: 2,
+                        borderWidth: 2.2,
                         fill: true,
+                        cubicInterpolationMode: 'monotone',
+                        tension: 0.34,
                         pointRadius: 0,
-                        pointHoverRadius: 6,
+                        pointHoverRadius: 5,
+                        pointHitRadius: 12,
                         pointBackgroundColor: '#38bdf8',
-                        pointBorderColor: '#ffffff',
+                        pointBorderColor: '#0b1120',
                         pointBorderWidth: 2,
-                        showLine: true,
-                        tension: 0.25,
                         yAxisID: 'y'
                     }},
                     {{
-                        label: 'Uso Argon (M)',
+                        label: '💧 Gemini 4 Hydrogen (M)',
+                        data: hydTokenPoints,
+                        backgroundColor: context => makeAreaGradient(context, '251, 191, 36', 0.26),
+                        borderColor: '#fbbf24',
+                        borderWidth: 2.4,
+                        fill: true,
+                        cubicInterpolationMode: 'monotone',
+                        tension: 0.34,
+                        pointRadius: 0,
+                        pointHoverRadius: 5,
+                        pointHitRadius: 12,
+                        pointBackgroundColor: '#fbbf24',
+                        pointBorderColor: '#0b1120',
+                        pointBorderWidth: 2,
+                        yAxisID: 'y'
+                    }},
+                    {{
+                        label: '🧠 Gemini 4 Argon (M)',
                         data: argonTokenPoints,
                         borderColor: '#c084fc',
                         backgroundColor: 'transparent',
                         borderWidth: 2,
+                        fill: false,
+                        cubicInterpolationMode: 'monotone',
+                        tension: 0.34,
                         pointRadius: 0,
                         pointHoverRadius: 5,
+                        pointHitRadius: 12,
                         pointBackgroundColor: '#c084fc',
-                        tension: 0.2,
-                        yAxisID: 'y'
-                    }},
-                    {{
-                        label: 'Uso Hydrogen (M)',
-                        data: hydTokenPoints,
-                        borderColor: '#fbbf24',
-                        backgroundColor: 'transparent',
-                        borderWidth: 2,
-                        pointRadius: 0,
-                        pointHoverRadius: 5,
-                        pointBackgroundColor: '#fbbf24',
-                        tension: 0.2,
+                        pointBorderColor: '#0b1120',
+                        pointBorderWidth: 2,
                         yAxisID: 'y'
                     }}
                 ];
 
                 if (chartDataPayload.has_pro_usage) {{
                     scatterDatasets.push({{
-                        label: 'Uso Pro (M)',
+                        label: '🧠 Gemini Pro (M)',
                         data: proTokenPoints,
                         borderColor: '#60a5fa',
                         backgroundColor: 'transparent',
                         borderWidth: 2,
+                        fill: false,
+                        cubicInterpolationMode: 'monotone',
+                        tension: 0.34,
                         pointRadius: 0,
                         pointHoverRadius: 5,
+                        pointHitRadius: 12,
                         pointBackgroundColor: '#60a5fa',
-                        tension: 0.2,
+                        pointBorderColor: '#0b1120',
+                        pointBorderWidth: 2,
                         yAxisID: 'y'
                     }});
                 }}
 
-                scatterDatasets.push(
-                    {{
-                        label: 'Valor 3.8 Flash (€)',
-                        data: costPoints,
-                        type: 'line',
-                        borderColor: 'rgba(74, 222, 128, 0.85)',
-                        backgroundColor: 'transparent',
-                        borderWidth: 2,
-                        pointRadius: 0,
-                        pointHoverRadius: 5,
-                        pointBackgroundColor: '#4ade80',
-                        yAxisID: 'yCost',
-                        tension: 0.2
-                    }},
-                    {{
-                        label: 'Coste Argon (€)',
-                        data: argonCostPoints,
-                        type: 'line',
-                        borderColor: '#f472b6',
-                        borderDash: [5, 4],
-                        backgroundColor: 'transparent',
-                        borderWidth: 2,
-                        pointRadius: 0,
-                        pointHoverRadius: 5,
-                        pointBackgroundColor: '#f472b6',
-                        yAxisID: 'yCost',
-                        tension: 0.2
-                    }},
-                    {{
-                        label: 'Coste Hydrogen (€)',
-                        data: hydCostPoints,
-                        type: 'line',
-                        borderColor: '#fb923c',
-                        borderDash: [3, 3],
-                        backgroundColor: 'transparent',
-                        borderWidth: 2,
-                        pointRadius: 0,
-                        pointHoverRadius: 5,
-                        pointBackgroundColor: '#fb923c',
-                        yAxisID: 'yCost',
-                        tension: 0.2
-                    }}
-                );
+                scatterDatasets.push({{
+                    label: '💎 Valor API Real Mix (€)',
+                    data: realCostPoints,
+                    type: 'line',
+                    borderColor: '#4ade80',
+                    borderDash: [5, 4],
+                    backgroundColor: 'transparent',
+                    borderWidth: 2,
+                    fill: false,
+                    cubicInterpolationMode: 'monotone',
+                    tension: 0.34,
+                    pointRadius: 0,
+                    pointHoverRadius: 5,
+                    pointHitRadius: 12,
+                    pointBackgroundColor: '#4ade80',
+                    pointBorderColor: '#0b1120',
+                    pointBorderWidth: 2,
+                    yAxisID: 'yCost'
+                }});
 
-                if (chartDataPayload.has_pro_usage) {{
-                    scatterDatasets.push({{
-                        label: 'Coste Pro (€)',
-                        data: proCostPoints,
-                        type: 'line',
-                        borderColor: '#93c5fd',
-                        borderDash: [4, 4],
-                        backgroundColor: 'transparent',
-                        borderWidth: 2,
-                        pointRadius: 0,
-                        pointHoverRadius: 5,
-                        pointBackgroundColor: '#93c5fd',
-                        yAxisID: 'yCost',
-                        tension: 0.2
-                    }});
-                }}
+                const maxModelTokens = Math.max(...flashTokenPoints, ...hydTokenPoints, ...argonTokenPoints, ...proTokenPoints, 20);
+                const maxRealCost = Math.max(...realCostPoints, 10);
 
                 timelineChartInstance = new Chart(ctx, {{
                     type: 'line',
@@ -2822,68 +2890,116 @@ def generate_html_report(sessions, pricing, output_path=None):
                         labels: labels,
                         datasets: scatterDatasets
                     }},
+                    plugins: [verticalCrosshairPlugin],
                     options: {{
                         responsive: true,
                         maintainAspectRatio: false,
-                        animation: {{ duration: 400 }},
+                        animation: {{ duration: 350 }},
+                        interaction: {{
+                            mode: 'index',
+                            intersect: false
+                        }},
                         scales: {{
                             x: {{
-                                ticks: {{ maxRotation: 45, font: {{ size: 10 }} }}
+                                grid: {{ display: false }},
+                                border: {{ display: false }},
+                                ticks: {{
+                                    maxRotation: 0,
+                                    autoSkip: true,
+                                    maxTicksLimit: 12,
+                                    padding: 8,
+                                    color: '#94a3b8',
+                                    font: {{ size: 11 }}
+                                }}
                             }},
                             y: {{
-                                title: {{ display: true, text: 'Tokens Diarios (M)' }},
-                                grid: {{ color: 'rgba(255, 255, 255, 0.05)' }},
-                                suggestedMax: (tokenPoints.length > 0 ? Math.max(...tokenPoints) : 100) * 1.05,
+                                title: {{ display: true, text: 'Consumo por Modelo (M tokens)', color: '#94a3b8', font: {{ size: 11, weight: '600' }} }},
+                                border: {{ display: false }},
+                                grid: {{ color: 'rgba(148, 163, 184, 0.08)' }},
+                                ticks: {{
+                                    padding: 8,
+                                    color: '#94a3b8',
+                                    callback: v => v + ' M'
+                                }},
+                                suggestedMax: maxModelTokens * 1.12,
                                 min: 0
                             }},
                             yCost: {{
                                 position: 'right',
-                                title: {{ display: true, text: 'Valor API (€)' }},
+                                title: {{ display: true, text: 'Valor API Real Mix (€)', color: '#4ade80', font: {{ size: 11, weight: '600' }} }},
+                                border: {{ display: false }},
                                 grid: {{ drawOnChartArea: false }},
                                 ticks: {{
-                                    stepSize: 10,
-                                    callback: v => v + ' €'
+                                    padding: 8,
+                                    color: '#4ade80',
+                                    maxTicksLimit: 7,
+                                    callback: v => Number(v).toFixed(0) + ' €'
                                 }},
-                                suggestedMax: Math.max(...costPoints, ...argonCostPoints, ...hydCostPoints, ...proCostPoints, 50) * 1.5,
+                                suggestedMax: maxRealCost * 1.18,
                                 min: 0
                             }}
                         }},
                         plugins: {{
+                            legend: {{
+                                labels: {{
+                                    usePointStyle: true,
+                                    pointStyle: 'circle',
+                                    boxWidth: 8,
+                                    boxHeight: 8,
+                                    padding: 18,
+                                    color: '#cbd5e1',
+                                    font: {{ size: 12, weight: '600' }}
+                                }}
+                            }},
                             tooltip: {{
-                                backgroundColor: 'rgba(15, 23, 42, 0.95)',
+                                backgroundColor: 'rgba(15, 23, 42, 0.96)',
                                 titleColor: '#38bdf8',
                                 titleFont: {{ size: 13, weight: 'bold' }},
-                                borderColor: 'rgba(56, 189, 248, 0.4)',
+                                bodySpacing: 5,
+                                borderColor: 'rgba(56, 189, 248, 0.35)',
                                 borderWidth: 1,
                                 padding: 12,
-                                cornerRadius: 8,
+                                cornerRadius: 10,
                                 callbacks: {{
                                     title: function(items) {{
                                         const idx = items[0].dataIndex;
                                         const d = chartDataPayload.scatter_days[idx];
-                                        return '📅 ' + d.full_date + ' · Top: ' + d.top_ws + ' (' + d.sessions + ' sesiones)';
+                                        if (!d || d.tokens <= 0) {{
+                                            return '📅 ' + (d ? d.full_date : '') + ' · Sin actividad';
+                                        }}
+                                        return '📅 ' + d.full_date + ' · Top: ' + d.top_ws + ' (' + d.sessions + ' ses.)';
                                     }},
                                     label: function(c) {{
-                                        if (c.dataset.yAxisID === 'yCost') {{
-                                            return c.dataset.label + ': ' + c.raw + ' €';
+                                        const d = chartDataPayload.scatter_days[c.dataIndex];
+                                        if (!d || d.tokens <= 0) {{
+                                            return c.datasetIndex === 0 ? 'Sin consumo registrado este día' : null;
                                         }}
-                                        return c.dataset.label + ': ' + c.raw + ' M';
+                                        if ((c.raw || 0) <= 0) return null;
+                                        if (c.dataset.yAxisID === 'yCost') {{
+                                            return c.dataset.label + ': ' + Number(c.raw).toFixed(2) + ' €';
+                                        }}
+                                        return c.dataset.label + ': ' + Number(c.raw).toFixed(2) + ' M';
                                     }},
                                     afterBody: function(items) {{
                                         const idx = items[0].dataIndex;
                                         const d = chartDataPayload.scatter_days[idx];
+                                        if (!d || d.tokens <= 0) return [];
                                         const lines = [
-                                            '• Total: ' + d.tokens + ' M tokens (~' + d.real_cost + ' € Mix Real)',
-                                            '  ↳ Caché: ' + d.cache + ' M | Nuevos: ' + d.new + ' M'
+                                            '─────────────────────────────',
+                                            '• Total Día: ' + d.tokens + ' M (~' + d.real_cost + ' € Mix Real)',
+                                            '  ↳ Caché: ' + (d.all_cache ?? d.cache) + ' M | Nuevos: ' + (d.all_new ?? d.new) + ' M'
                                         ];
-                                        if (d.argon_tokens > 0) {{
-                                            lines.push('• 🧠 Gemini 4 Argon: ' + d.argon_tokens + ' M (~' + d.argon_cost + ' € Argon)');
+                                        if ((d.flash_tokens || 0) > 0) {{
+                                            lines.push('  ↳ ⚡ Flash: ' + d.flash_tokens + ' M (~' + d.cost + ' €)');
                                         }}
-                                        if (d.hydrogen_tokens > 0) {{
-                                            lines.push('• 💧 Gemini 4 Hydrogen: ' + d.hydrogen_tokens + ' M (~' + d.hydrogen_cost + ' € Hydrogen)');
+                                        if ((d.hydrogen_tokens || 0) > 0) {{
+                                            lines.push('  ↳ 💧 Hydrogen: ' + d.hydrogen_tokens + ' M (~' + d.hydrogen_cost + ' €)');
                                         }}
-                                        if (d.pro_tokens > 0) {{
-                                            lines.push('• 🧠 Gemini Pro: ' + d.pro_tokens + ' M (~' + d.pro_cost + ' € Pro)');
+                                        if ((d.argon_tokens || 0) > 0) {{
+                                            lines.push('  ↳ 🧠 Argon: ' + d.argon_tokens + ' M (~' + d.argon_cost + ' €)');
+                                        }}
+                                        if ((d.pro_tokens || 0) > 0) {{
+                                            lines.push('  ↳ 🧠 Pro: ' + d.pro_tokens + ' M (~' + d.pro_cost + ' €)');
                                         }}
                                         return lines;
                                     }}
@@ -2995,10 +3111,11 @@ def generate_html_report(sessions, pricing, output_path=None):
             document.querySelectorAll('.pill-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
 
+            const activeScatterDays = chartDataPayload.scatter_days.filter(d => (d.tokens || 0) > 0).length;
             const subtitleMap = {{
                 'daily14': 'Mostrando los últimos 14 días activos',
                 'daily30': 'Mostrando los últimos 30 días activos',
-                'scatter': 'Mostrando el histórico continuo y limpio de todos los días registrados (' + chartDataPayload.scatter_days.length + ' días de desarrollo)',
+                'scatter': 'Evolución diaria continua suavizada por modelo y valor real (' + chartDataPayload.scatter_days.length + ' días naturales · ' + activeScatterDays + ' activos)',
                 'weekly': 'Mostrando ventana de 30 semanas (Navega con ◀ / ▶ de 15 en 15 semanas)',
                 'monthly': 'Mostrando la evolución mes a mes'
             }};

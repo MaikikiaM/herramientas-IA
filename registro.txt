@@ -36,3 +36,21 @@ SESIÓN: 13/11/2026 - SOPORTE GEMINI 4 HYDROGEN EN MONITOR-AI-TOKENS
 **Verificación:**
 - `py_compile`, `monitor.py --all --html --no-open --no-color`, `monitor.py --month --no-color`, validación JSON del HTML (`chartDataPayload`) y `node --check` ejecutados con salida 0 (86 sesiones, 6 con Hydrogen, 7 con Argon).
 ================================================================================
+
+================================================================================
+SESIÓN: 14/11/2026 - ROI DINÁMICO POR MESES Y REDISEÑO HISTÓRICO DIARIO
+================================================================================
+
+**Prompt del usuario:**
+- Ajustar la rentabilidad/ROI para multiplicar la cuota mensual por el número real de meses (4 meses = 87,96 € en lugar de 21,99 €).
+- Corregir el error de la gráfica de histórico diario (valor Flash inflado en días de uso Hydrogen) y rediseñar su estética manteniendo líneas suavizadas sobre todos los días.
+
+**Cambios implementados (`tools/Monitor-AI-Tokens/monitor.py`):**
+- `calculate_costs(..., num_months=1)` y `compute_analytics`: cálculo dinámico de `num_months` (meses activos con uso, actualmente 4) y `total_sub_eur` (`num_months × 21,99 €/mes`), actualizando ROI, multiplicador, ahorro neto, KPI card, badge de cabecera y pie total en tabla mensual / CLI (`--all` usa N meses; `--month` usa 1 mes).
+- `scatter_days_data`: serie continua de todos los días naturales (101 días con relleno a 0 en días sin uso) y separación exacta por modelo usando `pt["cost"]` real de Flash en vez de recalcular todos los tokens a tarifa Flash.
+- `initTimelineChart('scatter')`: líneas suavizadas monótonas (`cubicInterpolationMode: 'monotone'`) con rellenos degradados verticales para `Flash (M)` y `Hydrogen (M)`, línea limpia para `Argon (M)` (y `Pro (M)` condicional) y curva unificada `Valor API Real Mix (€)`, guía vertical al pasar el cursor (`verticalCrosshairPlugin`), leyenda circular, eje X horizontal legible y tooltips filtrados por modelos activos.
+- Renombrado encabezado comparativo de tablas a `Ref. 100% Flash` y agregado `TOTAL` en `#tab-monthly` y CLI.
+
+**Verificación:**
+- `py_compile`, `monitor.py --all --html --no-open --no-color` (4 meses = 87,96 €, ROI 623,0%, 6,2x), `monitor.py --month --no-color` (1 mes = 21,99 €, ROI 683,5%), validación sintética multi-mes (1m/3m) y `node --check` sobre el JS embebido en `reporte_consumo.html` completados con salida 0.
+================================================================================
