@@ -71,3 +71,25 @@ SESIÓN: 15/11/2026 - NORMALIZACIÓN DE REGLAS Y REGISTRO LITERAL DE PROMPTS
 - `AGENTS.md` y `docs/ia/ESTADO.md`: creado `Herramientas-IA/AGENTS.md` y actualizado `ESTADO.md` al 15/11/2026.
 - `registro.txt`: recuperados e insertados los prompts literales exactos de las sesiones del 13/11/2026 y 14/11/2026 (`Monitor-AI-Tokens`) preservando todo el historial previo.
 ================================================================================
+
+================================================================================
+SESIÓN: 17/11/2026 - IDENTIFICACIÓN POR PROTOBUF, SUBAGENTES FLASH Y DESGLOSE CACHÉ/NUEVOS DE HYDROGEN
+================================================================================
+- Prompts literales del usuario:
+  * [17/11/2026 00:01]: "dime en que directorio estas"
+  * [17/11/2026 00:02]: "Te comento, está fallando un poco el tema del monitor, sobre todo a la hora de identificar modelos. Por ejemplo, si me meto al histórico de 14 días y veo los últimos desde el 13 de noviembre más o menos, o si no desde el 14. Lo primero, el hydrogen solo se identifica en los tokens, no me dice cuáles eran nuevos y cuáles no. Y segundo, me está identificando el uso de 3.8 flash cuando estoy... estoy casi seguro de que yo no he usado 3.8 flash. No estoy al 100% seguro, pero estoy casi seguro de que yo no lo he usado antes. Podrías revisar por ahí pues no sé, si se está usando, si hay algún error o no. Y bueno, lo que te decía de que se vea el flash, digo el hydrogen, cuando utiliza contexto, cuando crea nuevos tokens y demás. /goal "
+
+- Auditoría e hallazgos raíz verificados en `~/.gemini/antigravity/conversations/*.db` (`executor_metadata`) y `conversation_summaries.db`:
+  1. Bug de clasificación de side-chats (`d4a5a46e`, `8.43 M` el 16 Nov + `0.85 M` el 17 Nov): ejecutó 100% con `Gemini 4 Hydrogen (XHigh)` (`enum 1528`), pero al no figurar en `conversation_summaries` sino en la tabla `conversation_parents` y carecer de `<USER_SETTINGS_CHANGE>`, `monitor.py` la volcaba por defecto a `Gemini 3.8 Flash`.
+  2. Uso interno automático de subagentes (`enum 1322` — `browser` `39.84 M` e `image-generator` `1.84 M`): aunque el chat principal estuviera en Hydrogen, Antigravity ejecuta esos subagentes bajo Flash rápido (`enum 1322`, distinto de `1318` = Gemini 3.8 Flash High). Además hubo `0.41 M` reales de `1318` el 14 Nov al retomar el hilo previo `74dbf958` (Chemde, abierto en septiembre) antes de pasarlo a Hydrogen.
+
+- Cambios implementados (`tools/Monitor-AI-Tokens/monitor.py`):
+  - Lectura directa de `executor_metadata` en `~/.gemini/antigravity/conversations/<cid>.db` (`PROTOBUF_MODEL_ENUM_MAP`, `_read_pb_varint`, `_parse_pb_fields`, `load_conversation_exec_models`) + carga de `conversation_parents` en `load_db_metadata()`.
+  - Separación explícita entre `⚡ Gemini 3.x Flash (Chat)` (`flash`, enums `1071/1072/1298/1318/1319/...`) y `🤖 Subagentes Flash (Browser/Img)` (`flash_sub`, enum `1322`) en CLI, KPIs, `model_split`, tablas y gráficas.
+  - Desglose completo de **Hydrogen (`💧 Caché Hydrogen (Contexto)` vs `💧 Nuevos Hydrogen`)** en las barras apiladas (`14 Días`, `30 Días`, `Semanas`, `Meses`), tooltips (omitidos valores en `0` y con `% caché` por modelo), tarjeta KPI (`Caché: 93.2% · Nuevos: 29.26 M`), `🤖 Reparto por Modelo` e informe CLI.
+
+- Verificación:
+  - `python -m py_compile tools/Monitor-AI-Tokens/monitor.py`: OK (`0`).
+  - `monitor.py --all --html --no-open --no-color` y `--month --no-color`: OK (`0`), confirmando `flash_chat = 0.00 M` los días 13, 15, 16 y 17 Nov (y `0.41 M` el 14 Nov de `74dbf958`), recuperando `d4a5a46e` en Hydrogen y separando `Subagentes Flash (Browser/Img)` (`41.73 M`, `9.21 €`).
+  - Verificación JSON/HTML (`verify_fix.py`, `check_ui_strings.py`) y sintaxis JS (`node --check`): todo OK (`NODE_JS_SYNTAX_EXIT=0`).
+================================================================================

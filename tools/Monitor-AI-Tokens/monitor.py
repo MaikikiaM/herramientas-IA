@@ -160,7 +160,7 @@ def load_known_projects():
     return projects
 
 def load_db_metadata():
-    """Lee metadatos oficiales (título y proyecto asignado) de conversation_summaries.db"""
+    """Lee metadatos oficiales (título, proyecto y relación padre) de conversation_summaries.db."""
     conv_meta = {}
     db_path = os.path.expanduser('~/.gemini/antigravity/conversation_summaries.db')
     if not os.path.exists(db_path):
@@ -190,6 +190,24 @@ def load_db_metadata():
                 'parent_conversation_id': (parent_cid or "").strip(),
                 'agent_name': (agent_name or "").strip()
             }
+        # Incorporar side-chats y bifurcaciones presentes en conversation_parents aunque falten en conversation_summaries
+        try:
+            cur.execute('SELECT conversation_id, parent_id FROM conversation_parents')
+            for cid, parent_id in cur.fetchall():
+                par = (parent_id or "").strip()
+                if not cid or not par:
+                    continue
+                if cid not in conv_meta:
+                    conv_meta[cid] = {
+                        'title': '',
+                        'workspace': None,
+                        'parent_conversation_id': par,
+                        'agent_name': ''
+                    }
+                elif not conv_meta[cid].get('parent_conversation_id'):
+                    conv_meta[cid]['parent_conversation_id'] = par
+        except Exception:
+            pass
     except Exception:
         pass
     return conv_meta
@@ -257,6 +275,105 @@ def determine_task_category(cid, title, text_corpus, ws):
         return t[:35]
     return 'Consultas y Tareas Varias'
 
+# Mapeo verificado entre IDs internos de Antigravity (executor_metadata) y nivel de modelo
+PROTOBUF_MODEL_ENUM_MAP = {
+    1525: "hydrogen",   # Gemini 4 Hydrogen (High)
+    1528: "hydrogen",   # Gemini 4 Hydrogen (XHigh)
+    1417: "argon",      # Gemini 4 Argon (High)
+    1668: "argon",      # Orchestrator (Argon)
+    1669: "argon",      # Orchestrator (Argon) / Worker
+    1322: "flash_sub",  # Flash automático de subagentes (browser / image-generator)
+    1071: "flash",      # Gemini 3.6 Flash (High)
+    1072: "flash",      # Gemini 3.6 Flash (Medium)
+    1298: "flash",      # Gemini 3.7 Flash
+    1318: "flash",      # Gemini 3.8 Flash (High)
+    1319: "flash",      # Gemini 3.8 Flash (Medium)
+    1026: "flash",      # Claude Opus 4.6 (histórico)
+    1035: "flash",      # Claude Sonnet 4.6 (histórico)
+    1402: "flash",      # Claude Opus 5.5 (histórico)
+    1405: "flash",      # Claude Sonnet 5.5 (histórico)
+}
+
+def _read_pb_varint(buf, pos):
+    val = 0
+    shift = 0
+    while pos < len(buf):
+        b = buf[pos]
+        pos += 1
+        val |= (b & 0x7f) << shift
+        if not (b & 0x80):
+            return val, pos
+        shift += 7
+    return val, pos
+
+def _parse_pb_fields(buf):
+    pos = 0
+    fields = []
+    while pos < len(buf):
+        tag, pos = _read_pb_varint(buf, pos)
+        fno = tag >> 3
+        wtype = tag & 0x07
+        if wtype == 0:
+            v, pos = _read_pb_varint(buf, pos)
+            fields.append((fno, 0, v))
+        elif wtype == 2:
+            ln, pos = _read_pb_varint(buf, pos)
+            fields.append((fno, 2, buf[pos:pos + ln]))
+            pos += ln
+        elif wtype == 1:
+            fields.append((fno, 1, buf[pos:pos + 8]))
+            pos += 8
+        elif wtype == 5:
+            fields.append((fno, 5, buf[pos:pos + 4]))
+            pos += 4
+        else:
+            break
+    return fields
+
+def _extract_exec_step_model(data_bytes):
+    model_id = None
+    end_step = None
+    for fno, wt, val in _parse_pb_fields(data_bytes):
+        if fno == 3 and wt == 0:
+            end_step = val
+        elif fno == 10 and wt == 2:
+            for a, wt2, v2 in _parse_pb_fields(val):
+                if a == 1 and wt2 == 0:
+                    model_id = v2
+                elif a == 1 and wt2 == 2:
+                    for b, wt3, v3 in _parse_pb_fields(v2):
+                        if b == 1 and wt3 == 0:
+                            model_id = v3
+    return end_step, model_id
+
+def load_conversation_exec_models(conv_id):
+    """Lee los pares ordenados (end_step_idx, tier_modelo) desde conversations/<cid>.db."""
+    db_path = os.path.expanduser(f'~/.gemini/antigravity/conversations/{conv_id}.db')
+    if not os.path.exists(db_path):
+        return []
+    ranges = []
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path, timeout=2.0)
+        for data_bytes, in conn.execute('SELECT data FROM executor_metadata ORDER BY idx'):
+            if not data_bytes:
+                continue
+            end_step, m_id = _extract_exec_step_model(data_bytes)
+            if end_step is not None and m_id is not None:
+                tier = PROTOBUF_MODEL_ENUM_MAP.get(m_id)
+                if tier:
+                    ranges.append((end_step, tier))
+        ranges.sort(key=lambda x: x[0])
+    except Exception:
+        return []
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return ranges
+
 def scan_antigravity_usage(brain_dir=None):
     """Escanea los transcripts de Antigravity deduplicando por conversación."""
     if not brain_dir:
@@ -305,7 +422,8 @@ def scan_antigravity_usage(brain_dir=None):
                 "in": 0, "out": 0, "cache": 0,
                 "argon_in": 0, "argon_out": 0, "argon_cache": 0,
                 "hyd_in": 0, "hyd_out": 0, "hyd_cache": 0,
-                "pro_in": 0, "pro_out": 0, "pro_cache": 0
+                "pro_in": 0, "pro_out": 0, "pro_cache": 0,
+                "fsub_in": 0, "fsub_out": 0, "fsub_cache": 0
             }),
             "monthly_steps": defaultdict(int),
             "workspace": "General / CLI",
@@ -317,21 +435,45 @@ def scan_antigravity_usage(brain_dir=None):
             "has_argon": False,
             "has_hydrogen": False,
             "has_pro": False,
+            "has_flash_sub": False,
+            "has_exec_models": False,
             "is_plan": False,
             "first_argon_dt": None,
             "first_hydrogen_dt": None,
             "argon_tokens": {"in": 0, "out": 0, "cache": 0, "total": 0},
             "hydrogen_tokens": {"in": 0, "out": 0, "cache": 0, "total": 0},
             "pro_tokens": {"in": 0, "out": 0, "cache": 0, "total": 0},
+            "flash_sub_tokens": {"in": 0, "out": 0, "cache": 0, "total": 0},
             "flash_tokens": {"in": 0, "out": 0, "cache": 0, "total": 0},
             "model_timeline": []
         }
+
+        exec_ranges = load_conversation_exec_models(conv_id)
+        session_data["has_exec_models"] = bool(exec_ranges)
+        conv_agent = db_metadata.get(conv_id, {}).get("agent_name", "").lower()
+
+        def resolve_step_model(s_idx, fallback_model, last_settings_step):
+            if exec_ranges and s_idx is not None:
+                for end_s, tier in exec_ranges:
+                    if s_idx <= end_s:
+                        return tier
+                last_end, last_tier = exec_ranges[-1]
+                # Si el usuario cambió de modelo en el turno vivo actual tras el último executor_metadata guardado
+                if last_settings_step > last_end:
+                    return fallback_model
+                return last_tier
+            if exec_ranges:
+                return exec_ranges[-1][1]
+            if conv_agent in ("browser", "image-generator"):
+                return "flash_sub"
+            return fallback_model
 
         try:
             with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                 matched_workspace = None
                 text_corpus = []
-                current_model = "flash"
+                current_model = "flash_sub" if conv_agent in ("browser", "image-generator") else "flash"
+                last_settings_step = -1
 
                 for line_idx, line in enumerate(f):
                     line = line.strip()
@@ -342,6 +484,7 @@ def scan_antigravity_usage(brain_dir=None):
                     except Exception:
                         continue
 
+                    s_idx_entry = entry.get('step_index')
                     # Extraer fecha
                     dt = parse_iso_date(entry.get('created_at'))
                     if dt:
@@ -361,19 +504,14 @@ def scan_antigravity_usage(brain_dir=None):
                             for raw_mod in mod_matches:
                                 target_mod = raw_mod.strip()
                                 session_data["model_hints"].add(target_mod)
+                                if s_idx_entry is not None:
+                                    last_settings_step = s_idx_entry
                                 if "argon" in target_mod:
                                     current_model = "argon"
-                                    session_data["has_argon"] = True
-                                    if not session_data["first_argon_dt"] and dt:
-                                        session_data["first_argon_dt"] = dt
                                 elif "hydrogen" in target_mod:
                                     current_model = "hydrogen"
-                                    session_data["has_hydrogen"] = True
-                                    if not session_data["first_hydrogen_dt"] and dt:
-                                        session_data["first_hydrogen_dt"] = dt
                                 elif "pro" in target_mod:
                                     current_model = "pro"
-                                    session_data["has_pro"] = True
                                 else:
                                     current_model = "flash"
                                 session_data["model_timeline"].append((dt, current_model))
@@ -406,6 +544,20 @@ def scan_antigravity_usage(brain_dir=None):
                         if len(text_corpus) < 40:
                             text_corpus.append(args_str[:500])
 
+                    step_model = resolve_step_model(s_idx_entry, current_model, last_settings_step)
+                    if step_model == "argon":
+                        session_data["has_argon"] = True
+                        if dt and (not session_data["first_argon_dt"] or dt < session_data["first_argon_dt"]):
+                            session_data["first_argon_dt"] = dt
+                    elif step_model == "hydrogen":
+                        session_data["has_hydrogen"] = True
+                        if dt and (not session_data["first_hydrogen_dt"] or dt < session_data["first_hydrogen_dt"]):
+                            session_data["first_hydrogen_dt"] = dt
+                    elif step_model == "pro":
+                        session_data["has_pro"] = True
+                    elif step_model == "flash_sub":
+                        session_data["has_flash_sub"] = True
+
                     # Extraer tokens
                     in_tok = entry.get('input_tokens') or 0
                     out_tok = entry.get('output_tokens') or 0
@@ -430,9 +582,10 @@ def scan_antigravity_usage(brain_dir=None):
                             "argon": session_data["argon_tokens"],
                             "hydrogen": session_data["hydrogen_tokens"],
                             "pro": session_data["pro_tokens"],
+                            "flash_sub": session_data["flash_sub_tokens"],
                             "flash": session_data["flash_tokens"]
                         }
-                        b = bucket_map[current_model]
+                        b = bucket_map[step_model]
                         b["in"] += in_tok
                         b["out"] += out_tok
                         b["cache"] += cache_tok
@@ -449,9 +602,9 @@ def scan_antigravity_usage(brain_dir=None):
                         day_row["in"] += in_tok
                         day_row["out"] += out_tok
                         day_row["cache"] += cache_tok
-                        prefix_map = {"argon": "argon_", "hydrogen": "hyd_", "pro": "pro_"}
-                        if current_model in prefix_map:
-                            pref = prefix_map[current_model]
+                        prefix_map = {"argon": "argon_", "hydrogen": "hyd_", "pro": "pro_", "flash_sub": "fsub_"}
+                        if step_model in prefix_map:
+                            pref = prefix_map[step_model]
                             day_row[f"{pref}in"] += in_tok
                             day_row[f"{pref}out"] += out_tok
                             day_row[f"{pref}cache"] += cache_tok
@@ -511,7 +664,7 @@ def scan_antigravity_usage(brain_dir=None):
         return None
 
     for s in sessions:
-        if not s["model_hints"] and s["first_timestamp"]:
+        if not s["has_exec_models"] and not s["model_hints"] and s["first_timestamp"] and not s["has_flash_sub"]:
             inherited = resolve_inherited_model(s["conversation_id"], s["first_timestamp"])
             if inherited in ("argon", "hydrogen", "pro"):
                 # Reasignar los tokens de flash al modelo heredado del padre
@@ -546,6 +699,8 @@ def scan_antigravity_usage(brain_dir=None):
             used.append("argon")
         if s["pro_tokens"]["total"] > 0 or s["has_pro"]:
             used.append("pro")
+        if s["flash_sub_tokens"]["total"] > 0 or s["has_flash_sub"]:
+            used.append("flash_sub")
         if s["flash_tokens"]["total"] > 0 or not used:
             used.append("flash")
         s["used_models"] = used
@@ -559,6 +714,8 @@ def scan_antigravity_usage(brain_dir=None):
             s["inferred_tier"] = "hydrogen" if s["hydrogen_tokens"]["total"] >= s["argon_tokens"]["total"] else "argon"
         elif "pro" in used and "flash" not in used:
             s["inferred_tier"] = "pro"
+        elif "flash_sub" in used and "flash" not in used:
+            s["inferred_tier"] = "flash_sub"
         else:
             s["inferred_tier"] = "flash"
 
@@ -637,24 +794,40 @@ def calculate_bucket_breakdown(data_dict, pricing):
     pro_out = data_dict.get("pro_out", 0)
     pro_cac = data_dict.get("pro_cache", 0)
 
-    flash_in = max(0, tot_in - arg_in - hyd_in - pro_in)
-    flash_out = max(0, tot_out - arg_out - hyd_out - pro_out)
-    flash_cac = max(0, tot_cac - arg_cac - hyd_cac - pro_cac)
+    fsub_in = data_dict.get("fsub_in", 0)
+    fsub_out = data_dict.get("fsub_out", 0)
+    fsub_cac = data_dict.get("fsub_cache", 0)
+
+    flash_in = max(0, tot_in - arg_in - hyd_in - pro_in - fsub_in)
+    flash_out = max(0, tot_out - arg_out - hyd_out - pro_out - fsub_out)
+    flash_cac = max(0, tot_cac - arg_cac - hyd_cac - pro_cac - fsub_cac)
 
     c_flash = calculate_costs(flash_in, flash_out, flash_cac, pricing)
+    c_fsub = calculate_costs(fsub_in, fsub_out, fsub_cac, pricing)
     c_argon = calculate_costs(arg_in, arg_out, arg_cac, pricing)
     c_hyd = calculate_costs(hyd_in, hyd_out, hyd_cac, pricing)
     c_pro = calculate_costs(pro_in, pro_out, pro_cac, pricing)
 
-    real_eur = c_flash["flash_eur"] + c_argon["argon_eur"] + c_hyd["hydrogen_eur"] + c_pro["pro_eur"]
+    fsub_eur = c_fsub["flash_eur"]
+    real_eur = c_flash["flash_eur"] + fsub_eur + c_argon["argon_eur"] + c_hyd["hydrogen_eur"] + c_pro["pro_eur"]
     return {
         "flash_in": flash_in, "flash_out": flash_out, "flash_cache": flash_cac,
         "flash_new": flash_in + flash_out,
         "flash_total": flash_in + flash_out + flash_cac,
-        "argon_total": arg_in + arg_out + arg_cac,
+        "fsub_in": fsub_in, "fsub_out": fsub_out, "fsub_cache": fsub_cac,
+        "fsub_new": fsub_in + fsub_out,
+        "fsub_total": fsub_in + fsub_out + fsub_cac,
+        "hyd_in": hyd_in, "hyd_out": hyd_out, "hyd_cache": hyd_cac,
+        "hyd_new": hyd_in + hyd_out,
         "hydrogen_total": hyd_in + hyd_out + hyd_cac,
+        "argon_in": arg_in, "argon_out": arg_out, "argon_cache": arg_cac,
+        "argon_new": arg_in + arg_out,
+        "argon_total": arg_in + arg_out + arg_cac,
+        "pro_in": pro_in, "pro_out": pro_out, "pro_cache": pro_cac,
+        "pro_new": pro_in + pro_out,
         "pro_total": pro_in + pro_out + pro_cac,
         "flash_eur": c_flash["flash_eur"],
+        "fsub_eur": fsub_eur,
         "argon_eur": c_argon["argon_eur"],
         "hydrogen_eur": c_hyd["hydrogen_eur"],
         "pro_eur": c_pro["pro_eur"],
@@ -831,6 +1004,7 @@ def compute_analytics(sessions, pricing):
             "argon_in": 0, "argon_out": 0, "argon_cache": 0,
             "hyd_in": 0, "hyd_out": 0, "hyd_cache": 0,
             "pro_in": 0, "pro_out": 0, "pro_cache": 0,
+            "fsub_in": 0, "fsub_out": 0, "fsub_cache": 0,
             "sessions": set(), "workspaces": defaultdict(int)
         }
 
@@ -892,6 +1066,7 @@ def compute_analytics(sessions, pricing):
                 "argon_in", "argon_out", "argon_cache",
                 "hyd_in", "hyd_out", "hyd_cache",
                 "pro_in", "pro_out", "pro_cache",
+                "fsub_in", "fsub_out", "fsub_cache",
             )
             for target_bucket in (daily_stats[d_key], weekly_stats[w_key], monthly_stats[m_key]):
                 for nf in numeric_fields:
@@ -1104,12 +1279,14 @@ def compute_analytics(sessions, pricing):
     argon_stats = build_model_stats("has_argon", "argon_tokens", "first_argon_dt", "argon_", "02/11/2026")
     hydrogen_stats = build_model_stats("has_hydrogen", "hydrogen_tokens", "first_hydrogen_dt", "hyd_", "Sin uso")
     pro_stats = build_model_stats("has_pro", "pro_tokens", "first_timestamp", "pro_", "Sin uso")
+    flash_sub_stats = build_model_stats("has_flash_sub", "flash_sub_tokens", "first_timestamp", "fsub_", "Sin uso")
 
     global_raw_bucket = {
         "in": tot_in_all, "out": tot_out_all, "cache": tot_cache_all,
         "argon_in": argon_stats["tot_in"], "argon_out": argon_stats["tot_out"], "argon_cache": argon_stats["tot_cache"],
         "hyd_in": hydrogen_stats["tot_in"], "hyd_out": hydrogen_stats["tot_out"], "hyd_cache": hydrogen_stats["tot_cache"],
         "pro_in": pro_stats["tot_in"], "pro_out": pro_stats["tot_out"], "pro_cache": pro_stats["tot_cache"],
+        "fsub_in": flash_sub_stats["tot_in"], "fsub_out": flash_sub_stats["tot_out"], "fsub_cache": flash_sub_stats["tot_cache"],
     }
     global_breakdown = calculate_bucket_breakdown(global_raw_bucket, pricing)
     active_months_count = sum(
@@ -1144,6 +1321,7 @@ def compute_analytics(sessions, pricing):
         "argon": argon_stats,
         "hydrogen": hydrogen_stats,
         "pro": pro_stats,
+        "flash_sub": flash_sub_stats,
         "global_breakdown": global_breakdown,
         "num_months": num_months,
         "monthly_sub_eur": sub_eur,
@@ -1207,7 +1385,7 @@ def print_cli_report(sessions, pricing, filter_month=False):
     print(f"  • Comparativa con Gemini 4 Hydrogen     : {costs['hydrogen_usd']:8.2f} $  (~ {Colors.YELLOW}{Colors.BOLD}{costs['hydrogen_eur']:.2f} €{Colors.RESET})  {Colors.DIM}[Tarifa oficial $1.50 / $7.50 / $0.075]{Colors.RESET}")
     print(f"  • Comparativa con Gemini Pro            : {costs['pro_usd']:8.2f} $  (~ {Colors.BLUE}{costs['pro_eur']:.2f} €{Colors.RESET})  {Colors.DIM}[Si hubieras usado modo Pro]{Colors.RESET}")
     print(f"  • Comparativa con Gemini 4 Argon        : {costs['argon_usd']:8.2f} $  (~ {Colors.MAGENTA}{costs['argon_eur']:.2f} €{Colors.RESET})  {Colors.DIM}[Tarifa oficial $2.00 / $10.00 / $0.10]{Colors.RESET}")
-    print(f"  • {Colors.BOLD}Valor API Real Mix (Según modelo usado){Colors.RESET}: ~ {Colors.GREEN}{Colors.BOLD}{real_eur:.2f} €{Colors.RESET}  {Colors.DIM}[Flash: {period_breakdown['flash_eur']:.2f}€ + Argon: {period_breakdown['argon_eur']:.2f}€ + Hydrogen: {period_breakdown['hydrogen_eur']:.2f}€]{Colors.RESET}")
+    print(f"  • {Colors.BOLD}Valor API Real Mix (Según modelo usado){Colors.RESET}: ~ {Colors.GREEN}{Colors.BOLD}{real_eur:.2f} €{Colors.RESET}  {Colors.DIM}[Flash 3.x: {period_breakdown['flash_eur']:.2f}€ + Subag.Flash: {period_breakdown['fsub_eur']:.2f}€ + Argon: {period_breakdown['argon_eur']:.2f}€ + Hydrogen: {period_breakdown['hydrogen_eur']:.2f}€]{Colors.RESET}")
     print(f"  {Colors.DIM}↳ Tarifas / 1M (3.8 Flash):  Entrada $0.75 (~0.69€) | Salida $3.75 (~3.45€) | Caché (-90%) $0.075 (~0.069€){Colors.RESET}")
     print(f"  {Colors.DIM}↳ Tarifas / 1M (4 Hydrogen): Entrada $1.50 (~1.38€) | Salida $7.50 (~6.90€) | Caché (-95%) $0.075 (~0.069€){Colors.RESET}")
     print(f"  {Colors.DIM}↳ Tarifas / 1M (Pro):        Entrada $1.25 (~1.15€) | Salida $5.00 (~4.60€) | Caché (-75%) $0.3125 (~0.29€){Colors.RESET}")
@@ -1232,12 +1410,31 @@ def print_cli_report(sessions, pricing, filter_month=False):
     # Bloque de Gemini 4 Hydrogen
     hyd_data = analytics.get("hydrogen", {})
     if hyd_data and hyd_data.get("sessions_count", 0) > 0:
+        hyd_tot = hyd_data["tot_tokens"]
+        hyd_cac = hyd_data["tot_cache"]
+        hyd_in = hyd_data["tot_in"]
+        hyd_out = hyd_data["tot_out"]
+        hyd_new = hyd_in + hyd_out
+        hyd_cac_pct = (hyd_cac / hyd_tot * 100) if hyd_tot > 0 else 0
         print(f"\n{Colors.BOLD}💧 GEMINI 4 HYDROGEN (Nuevo Estándar Diario · Lanzado Nov 2026):{Colors.RESET}")
         print(f"  • 🚀 {Colors.BOLD}Primer uso detectado{Colors.RESET}       : {Colors.YELLOW}{hyd_data['first_date']}{Colors.RESET} ({hyd_data.get('first_week_label', 'W46')})")
-        print(f"  • 📊 {Colors.BOLD}Consumo acumulado total{Colors.RESET}    : {Colors.YELLOW}{format_tokens(hyd_data['tot_tokens'])}{Colors.RESET} tokens ({format_tokens(hyd_data['week_tokens'])} en {hyd_data.get('cur_week_key', 'semana actual')})")
+        print(f"  • 📊 {Colors.BOLD}Consumo acumulado total{Colors.RESET}    : {Colors.YELLOW}{format_tokens(hyd_tot)}{Colors.RESET} tokens ({format_tokens(hyd_data['week_tokens'])} en {hyd_data.get('cur_week_key', 'semana actual')})")
+        print(f"  • 🧩 {Colors.BOLD}Contexto vs Nuevos{Colors.RESET}         : Caché {Colors.CYAN}{format_tokens(hyd_cac)}{Colors.RESET} ({hyd_cac_pct:.1f}%) | Nuevos {Colors.YELLOW}{format_tokens(hyd_new)}{Colors.RESET} ({format_tokens(hyd_in)} in + {format_tokens(hyd_out)} out)")
         print(f"  • 📋 {Colors.BOLD}Sesiones registradas{Colors.RESET}       : {Colors.CYAN}{hyd_data['sessions_count']}{Colors.RESET} conversaciones con Gemini 4 Hydrogen")
         print(f"  • 💰 {Colors.BOLD}Valor API comercial Hydrogen{Colors.RESET}: {Colors.YELLOW}{hyd_data['costs']['hydrogen_eur']:.2f} €{Colors.RESET} {Colors.DIM}[Tarifa oficial $1.50 in / $7.50 out / $0.075 caché]{Colors.RESET}")
         print(f"  {Colors.DIM}↳ Razonamiento XHigh/High incluido en tokens de salida; caché implícito con -95% de ahorro.{Colors.RESET}")
+
+    # Bloque de Subagentes Flash automáticos (browser / image-generator)
+    fsub_data = analytics.get("flash_sub", {})
+    if fsub_data and fsub_data.get("sessions_count", 0) > 0:
+        fs_tot = fsub_data["tot_tokens"]
+        fs_cac = fsub_data["tot_cache"]
+        fs_new = fsub_data["tot_in"] + fsub_data["tot_out"]
+        fs_pct = (fs_cac / fs_tot * 100) if fs_tot > 0 else 0
+        print(f"\n{Colors.BOLD}🤖 SUBAGENTES FLASH AUTOMÁTICOS (browser / image-generator · enum 1322):{Colors.RESET}")
+        print(f"  • 📊 {Colors.BOLD}Consumo acumulado{Colors.RESET}          : {Colors.CYAN}{format_tokens(fs_tot)}{Colors.RESET} tokens ({format_tokens(fsub_data['week_tokens'])} en {fsub_data.get('cur_week_key', 'semana actual')}) · {fsub_data['sessions_count']} subagentes")
+        print(f"  • 🧩 {Colors.BOLD}Contexto vs Nuevos{Colors.RESET}         : Caché {format_tokens(fs_cac)} ({fs_pct:.1f}%) | Nuevos {format_tokens(fs_new)} · ~{fsub_data['costs']['flash_eur']:.2f} €")
+        print(f"  {Colors.DIM}↳ Llamados internamente por Antigravity aunque tu chat principal esté en Gemini 4 Hydrogen.{Colors.RESET}")
 
     meses_txt = "1 mes" if num_months == 1 else f"{num_months} meses"
     cuota_desc = f"{period_sub_eur:.2f} € ({meses_txt} × {sub_eur:.2f} €/mes)" if num_months > 1 else f"{sub_eur:.2f} € / mes"
@@ -1351,8 +1548,16 @@ def generate_html_report(sessions, pricing, output_path=None):
             "cache": round(bd["flash_cache"] / 1_000_000, 2),
             "new": round(bd["flash_new"] / 1_000_000, 2),
             "cost": round(bd["flash_eur"], 2),
+            "fsub_cache": round(bd["fsub_cache"] / 1_000_000, 2),
+            "fsub_new": round(bd["fsub_new"] / 1_000_000, 2),
+            "fsub_tokens": round(bd["fsub_total"] / 1_000_000, 2),
+            "fsub_cost": round(bd["fsub_eur"], 2),
+            "argon_cache": round(bd["argon_cache"] / 1_000_000, 2),
+            "argon_new": round(bd["argon_new"] / 1_000_000, 2),
             "argon_tokens": round(bd["argon_total"] / 1_000_000, 2),
             "argon_cost": round(bd["argon_eur"], 2),
+            "hyd_cache": round(bd["hyd_cache"] / 1_000_000, 2),
+            "hyd_new": round(bd["hyd_new"] / 1_000_000, 2),
             "hydrogen_tokens": round(bd["hydrogen_total"] / 1_000_000, 2),
             "hydrogen_cost": round(bd["hydrogen_eur"], 2),
             "pro_tokens": round(bd["pro_total"] / 1_000_000, 2),
@@ -1360,29 +1565,44 @@ def generate_html_report(sessions, pricing, output_path=None):
             "real_cost": round(bd["real_eur"], 2),
         }
 
+    def make_chart_series():
+        return {
+            "labels": [], "cache": [], "new": [], "costs": [],
+            "fsub_cache": [], "fsub_new": [], "fsub_tokens": [], "fsub_costs": [],
+            "argon_cache": [], "argon_new": [], "argon_tokens": [], "argon_costs": [],
+            "hyd_cache": [], "hyd_new": [], "hydrogen_tokens": [], "hydrogen_costs": [],
+            "pro_tokens": [], "pro_costs": []
+        }
+
+    def append_chart_point(series, label, pt):
+        series["labels"].append(label)
+        series["cache"].append(pt["cache"])
+        series["new"].append(pt["new"])
+        series["costs"].append(pt["cost"])
+        series["fsub_cache"].append(pt["fsub_cache"])
+        series["fsub_new"].append(pt["fsub_new"])
+        series["fsub_tokens"].append(pt["fsub_tokens"])
+        series["fsub_costs"].append(pt["fsub_cost"])
+        series["argon_cache"].append(pt["argon_cache"])
+        series["argon_new"].append(pt["argon_new"])
+        series["argon_tokens"].append(pt["argon_tokens"])
+        series["argon_costs"].append(pt["argon_cost"])
+        series["hyd_cache"].append(pt["hyd_cache"])
+        series["hyd_new"].append(pt["hyd_new"])
+        series["hydrogen_tokens"].append(pt["hydrogen_tokens"])
+        series["hydrogen_costs"].append(pt["hydrogen_cost"])
+        series["pro_tokens"].append(pt["pro_tokens"])
+        series["pro_costs"].append(pt["pro_cost"])
+
     # 1. Datos diarios (últimos 14 y 30 días)
     sorted_all_days = sorted(analytics["daily"].keys())
 
     def prepare_daily_chart_data(day_keys):
-        series = {
-            "labels": [], "cache": [], "new": [], "costs": [],
-            "argon_tokens": [], "argon_costs": [],
-            "hydrogen_tokens": [], "hydrogen_costs": [],
-            "pro_tokens": [], "pro_costs": []
-        }
+        series = make_chart_series()
         for d_str in day_keys:
             dt_obj = datetime.strptime(d_str, "%Y-%m-%d")
-            series["labels"].append(dt_obj.strftime("%d %b"))
             pt = extract_chart_point(analytics["daily"][d_str])
-            series["cache"].append(pt["cache"])
-            series["new"].append(pt["new"])
-            series["costs"].append(pt["cost"])
-            series["argon_tokens"].append(pt["argon_tokens"])
-            series["argon_costs"].append(pt["argon_cost"])
-            series["hydrogen_tokens"].append(pt["hydrogen_tokens"])
-            series["hydrogen_costs"].append(pt["hydrogen_cost"])
-            series["pro_tokens"].append(pt["pro_tokens"])
-            series["pro_costs"].append(pt["pro_cost"])
+            append_chart_point(series, dt_obj.strftime("%d %b"), pt)
         return series
 
     days_14_keys = sorted_all_days[-14:] if len(sorted_all_days) >= 14 else sorted_all_days
@@ -1393,26 +1613,12 @@ def generate_html_report(sessions, pricing, output_path=None):
 
     # 2. Datos semanales
     sorted_weeks = sorted(analytics["weekly"].keys())
-    weekly_series = {
-        "labels": [], "cache": [], "new": [], "costs": [],
-        "argon_tokens": [], "argon_costs": [],
-        "hydrogen_tokens": [], "hydrogen_costs": [],
-        "pro_tokens": [], "pro_costs": []
-    }
+    weekly_series = make_chart_series()
     weekly_rows = []
     for w_key in sorted_weeks:
         st = analytics["weekly"][w_key]
         pt = extract_chart_point(st)
-        weekly_series["labels"].append(w_key.replace("-", " "))
-        weekly_series["cache"].append(pt["cache"])
-        weekly_series["new"].append(pt["new"])
-        weekly_series["costs"].append(pt["cost"])
-        weekly_series["argon_tokens"].append(pt["argon_tokens"])
-        weekly_series["argon_costs"].append(pt["argon_cost"])
-        weekly_series["hydrogen_tokens"].append(pt["hydrogen_tokens"])
-        weekly_series["hydrogen_costs"].append(pt["hydrogen_cost"])
-        weekly_series["pro_tokens"].append(pt["pro_tokens"])
-        weekly_series["pro_costs"].append(pt["pro_cost"])
+        append_chart_point(weekly_series, w_key.replace("-", " "), pt)
 
         w_tot = st["in"] + st["out"] + st["cache"]
         sess_cnt = len(st['sessions']) if isinstance(st['sessions'], set) else st['sessions']
@@ -1432,32 +1638,17 @@ def generate_html_report(sessions, pricing, output_path=None):
 
     # 3. Datos mensuales
     sorted_months = sorted(analytics["monthly"].keys())
-    monthly_series = {
-        "labels": [], "cache": [], "new": [], "costs": [],
-        "argon_tokens": [], "argon_costs": [],
-        "hydrogen_tokens": [], "hydrogen_costs": [],
-        "pro_tokens": [], "pro_costs": []
-    }
+    monthly_series = make_chart_series()
     monthly_rows = []
     for m_key in sorted_months:
         yr, mo = m_key.split("-")
         label = f"{month_names_es.get(mo, mo)} {yr}"
         st = analytics["monthly"][m_key]
         pt = extract_chart_point(st)
+        append_chart_point(monthly_series, label, pt)
 
         m_tot = st["in"] + st["out"] + st["cache"]
         sess_cnt = len(st['sessions']) if isinstance(st['sessions'], set) else st['sessions']
-        monthly_series["labels"].append(label)
-        monthly_series["cache"].append(pt["cache"])
-        monthly_series["new"].append(pt["new"])
-        monthly_series["costs"].append(pt["cost"])
-        monthly_series["argon_tokens"].append(pt["argon_tokens"])
-        monthly_series["argon_costs"].append(pt["argon_cost"])
-        monthly_series["hydrogen_tokens"].append(pt["hydrogen_tokens"])
-        monthly_series["hydrogen_costs"].append(pt["hydrogen_cost"])
-        monthly_series["pro_tokens"].append(pt["pro_tokens"])
-        monthly_series["pro_costs"].append(pt["pro_cost"])
-
         c = calculate_costs(st["in"], st["out"], st["cache"], pricing)
         m_roi_real = (pt["real_cost"] / sub_eur * 100) if sub_eur > 0 else 0
         is_reconstructed = (m_key in ["2026-08", "2026-09"])
@@ -1490,10 +1681,14 @@ def generate_html_report(sessions, pricing, output_path=None):
         top_ws = max(st["workspaces"].items(), key=lambda x: x[1])[0] if st["workspaces"] else "General"
         sess_cnt = len(st['sessions']) if isinstance(st['sessions'], set) else st['sessions']
         model_tags = []
-        if pt["argon_tokens"] > 0:
-            model_tags.append('<span class="badge badge-argon" style="font-size:10px;padding:1px 6px;">Argon</span>')
         if pt["hydrogen_tokens"] > 0:
             model_tags.append('<span class="badge badge-hydrogen" style="font-size:10px;padding:1px 6px;">Hydrogen</span>')
+        if pt["argon_tokens"] > 0:
+            model_tags.append('<span class="badge badge-argon" style="font-size:10px;padding:1px 6px;">Argon</span>')
+        if pt["fsub_tokens"] > 0:
+            model_tags.append('<span class="badge badge-subflash" style="font-size:10px;padding:1px 6px;">Subag. Flash</span>')
+        if (pt["cache"] + pt["new"]) > 0 and (pt["hydrogen_tokens"] > 0 or pt["argon_tokens"] > 0 or pt["fsub_tokens"] > 0):
+            model_tags.append('<span class="badge badge-success" style="font-size:10px;padding:1px 6px;">3.x Flash</span>')
         tags_html = (" " + " ".join(model_tags)) if model_tags else ""
         daily_rows.append(f"""
         <tr>
@@ -1572,6 +1767,7 @@ def generate_html_report(sessions, pricing, output_path=None):
 
         s_real_eur = (
             calculate_costs(s["flash_tokens"]["in"], s["flash_tokens"]["out"], s["flash_tokens"]["cache"], pricing)["flash_eur"] +
+            calculate_costs(s["flash_sub_tokens"]["in"], s["flash_sub_tokens"]["out"], s["flash_sub_tokens"]["cache"], pricing)["flash_eur"] +
             calculate_costs(s["argon_tokens"]["in"], s["argon_tokens"]["out"], s["argon_tokens"]["cache"], pricing)["argon_eur"] +
             calculate_costs(s["hydrogen_tokens"]["in"], s["hydrogen_tokens"]["out"], s["hydrogen_tokens"]["cache"], pricing)["hydrogen_eur"] +
             calculate_costs(s["pro_tokens"]["in"], s["pro_tokens"]["out"], s["pro_tokens"]["cache"], pricing)["pro_eur"]
@@ -1585,8 +1781,10 @@ def generate_html_report(sessions, pricing, output_path=None):
             badge_parts.append('<span class="badge badge-argon">🧠 Gemini 4 Argon</span>')
         if "pro" in used_mods:
             badge_parts.append('<span class="badge badge-ws">🧠 Gemini Pro</span>')
+        if "flash_sub" in used_mods:
+            badge_parts.append('<span class="badge badge-subflash">🤖 Subag. Flash</span>')
         if "flash" in used_mods:
-            badge_parts.append('<span class="badge badge-success">⚡ 3.8 Flash</span>')
+            badge_parts.append('<span class="badge badge-success">⚡ 3.x Flash</span>')
         mod_badge = " ".join(badge_parts)
 
         recent_rows.append(f"""
@@ -1620,8 +1818,16 @@ def generate_html_report(sessions, pricing, output_path=None):
             "new": pt["new"],
             "costs": pt["cost"],
             "tokens": round(w_tot / 1_000_000, 2),
+            "fsub_cache": pt["fsub_cache"],
+            "fsub_new": pt["fsub_new"],
+            "fsub_tokens": pt["fsub_tokens"],
+            "fsub_costs": pt["fsub_cost"],
+            "argon_cache": pt["argon_cache"],
+            "argon_new": pt["argon_new"],
             "argon_tokens": pt["argon_tokens"],
             "argon_costs": pt["argon_cost"],
+            "hyd_cache": pt["hyd_cache"],
+            "hyd_new": pt["hyd_new"],
             "hydrogen_tokens": pt["hydrogen_tokens"],
             "hydrogen_costs": pt["hydrogen_cost"],
             "pro_tokens": pt["pro_tokens"],
@@ -1640,6 +1846,7 @@ def generate_html_report(sessions, pricing, output_path=None):
             "argon_in": 0, "argon_out": 0, "argon_cache": 0,
             "hyd_in": 0, "hyd_out": 0, "hyd_cache": 0,
             "pro_in": 0, "pro_out": 0, "pro_cache": 0,
+            "fsub_in": 0, "fsub_out": 0, "fsub_cache": 0,
             "sessions": set(), "workspaces": {}
         }
         while cur_sc_dt <= last_sc_dt:
@@ -1664,9 +1871,17 @@ def generate_html_report(sessions, pricing, output_path=None):
                 "real_cost": pt["real_cost"],
                 "top_ws": top_ws,
                 "sessions": sess_cnt,
+                "fsub_tokens": pt["fsub_tokens"],
+                "fsub_cache": pt["fsub_cache"],
+                "fsub_new": pt["fsub_new"],
+                "fsub_cost": pt["fsub_cost"],
                 "argon_tokens": pt["argon_tokens"],
+                "argon_cache": pt["argon_cache"],
+                "argon_new": pt["argon_new"],
                 "argon_cost": pt["argon_cost"],
                 "hydrogen_tokens": pt["hydrogen_tokens"],
+                "hyd_cache": pt["hyd_cache"],
+                "hyd_new": pt["hyd_new"],
                 "hydrogen_cost": pt["hydrogen_cost"],
                 "pro_tokens": pt["pro_tokens"],
                 "pro_cost": pt["pro_cost"]
@@ -1674,58 +1889,48 @@ def generate_html_report(sessions, pricing, output_path=None):
             cur_sc_dt += timedelta(days=1)
 
     # 9. Reparto por modelo para widget secundario
-    model_split_items = [
-        {
-            "key": "flash",
-            "label": "Gemini 3.x Flash",
-            "tokens": g_bd["flash_total"],
-            "tokens_m": round(g_bd["flash_total"] / 1_000_000, 2),
-            "tokens_fmt": format_tokens(g_bd["flash_total"]),
-            "eur": round(g_bd["flash_eur"], 2),
-            "pct": round((g_bd["flash_total"] / tot_tokens_all * 100) if tot_tokens_all else 0, 2),
-            "color": "#38bdf8"
-        },
-        {
-            "key": "argon",
-            "label": "Gemini 4 Argon",
-            "tokens": g_bd["argon_total"],
-            "tokens_m": round(g_bd["argon_total"] / 1_000_000, 2),
-            "tokens_fmt": format_tokens(g_bd["argon_total"]),
-            "eur": round(g_bd["argon_eur"], 2),
-            "pct": round((g_bd["argon_total"] / tot_tokens_all * 100) if tot_tokens_all else 0, 2),
-            "color": "#c084fc"
-        },
-        {
-            "key": "hydrogen",
-            "label": "Gemini 4 Hydrogen",
-            "tokens": g_bd["hydrogen_total"],
-            "tokens_m": round(g_bd["hydrogen_total"] / 1_000_000, 2),
-            "tokens_fmt": format_tokens(g_bd["hydrogen_total"]),
-            "eur": round(g_bd["hydrogen_eur"], 2),
-            "pct": round((g_bd["hydrogen_total"] / tot_tokens_all * 100) if tot_tokens_all else 0, 2),
-            "color": "#fbbf24"
+    def make_split_item(key, label, tot_key, cac_key, new_key, eur_key, color):
+        tot_v = g_bd[tot_key]
+        cac_v = g_bd[cac_key]
+        new_v = g_bd[new_key]
+        return {
+            "key": key,
+            "label": label,
+            "tokens": tot_v,
+            "tokens_m": round(tot_v / 1_000_000, 2),
+            "tokens_fmt": format_tokens(tot_v),
+            "cache_fmt": format_tokens(cac_v),
+            "new_fmt": format_tokens(new_v),
+            "cache_pct": round((cac_v / tot_v * 100) if tot_v else 0, 1),
+            "eur": round(g_bd[eur_key], 2),
+            "pct": round((tot_v / tot_tokens_all * 100) if tot_tokens_all else 0, 2),
+            "color": color
         }
+
+    model_split_items = [
+        make_split_item("flash", "⚡ Gemini 3.x Flash (Chat)", "flash_total", "flash_cache", "flash_new", "flash_eur", "#38bdf8"),
+        make_split_item("argon", "🧠 Gemini 4 Argon", "argon_total", "argon_cache", "argon_new", "argon_eur", "#c084fc"),
+        make_split_item("hydrogen", "💧 Gemini 4 Hydrogen", "hydrogen_total", "hyd_cache", "hyd_new", "hydrogen_eur", "#fbbf24"),
     ]
+    has_fsub_usage = g_bd["fsub_total"] > 0
+    if has_fsub_usage:
+        model_split_items.append(
+            make_split_item("flash_sub", "🤖 Subagentes Flash (Browser/Img)", "fsub_total", "fsub_cache", "fsub_new", "fsub_eur", "#2dd4bf")
+        )
+    has_hyd_usage = g_bd["hydrogen_total"] > 0
     has_pro_usage = g_bd["pro_total"] > 0
     if has_pro_usage:
-        model_split_items.append({
-            "key": "pro",
-            "label": "Gemini Pro",
-            "tokens": g_bd["pro_total"],
-            "tokens_m": round(g_bd["pro_total"] / 1_000_000, 2),
-            "tokens_fmt": format_tokens(g_bd["pro_total"]),
-            "eur": round(g_bd["pro_eur"], 2),
-            "pct": round((g_bd["pro_total"] / tot_tokens_all * 100) if tot_tokens_all else 0, 2),
-            "color": "#60a5fa"
-        })
+        model_split_items.append(
+            make_split_item("pro", "🧠 Gemini Pro", "pro_total", "pro_cache", "pro_new", "pro_eur", "#60a5fa")
+        )
 
     model_inspector_rows = []
     for item in model_split_items:
         bar_w = max(2.0 if item["tokens"] > 0 else 0.0, min(100.0, item["pct"]))
         model_inspector_rows.append(f"""
-        <div class="inspector-cat-row">
+        <div class="inspector-cat-row" title="Caché: {item['cache_fmt']} ({item['cache_pct']}%) · Nuevos: {item['new_fmt']}">
             <span style="font-weight: 600; color: {item['color']};">{item['label']}</span>
-            <span style="font-size: 11px; color: var(--text-muted);"><strong style="color: var(--text);">{item['tokens_fmt']}</strong> ({item['pct']:.2f}%) · {item['eur']:.2f} €</span>
+            <span style="font-size: 11px; color: var(--text-muted);"><strong style="color: var(--text);">{item['tokens_fmt']}</strong> ({item['pct']:.2f}%) · {item['eur']:.2f} € <span style="opacity:0.85;">· 🆕 {item['new_fmt']} / 💾 {item['cache_fmt']}</span></span>
         </div>
         <div class="inspector-bar-bg"><div class="inspector-bar-fill" style="width: {bar_w:.1f}%; background: {item['color']};"></div></div>
         """)
@@ -1740,6 +1945,8 @@ def generate_html_report(sessions, pricing, output_path=None):
         "initial_week_start": initial_week_start,
         "scatter_days": scatter_days_data,
         "has_pro_usage": has_pro_usage,
+        "has_fsub_usage": has_fsub_usage,
+        "has_hyd_usage": has_hyd_usage,
         "ws_labels": chart_ws_labels,
         "ws_tokens": chart_ws_tokens,
         "ws_meta": chart_ws_meta,
@@ -1768,6 +1975,9 @@ def generate_html_report(sessions, pricing, output_path=None):
     meses_label = "1 mes" if num_months == 1 else f"{num_months} meses"
     arg_stat = analytics["argon"]
     hyd_stat = analytics["hydrogen"]
+    hyd_tot_stat = hyd_stat["tot_tokens"]
+    hyd_cac_pct = (hyd_stat["tot_cache"] / hyd_tot_stat * 100) if hyd_tot_stat > 0 else 0.0
+    hyd_new_stat = hyd_stat["tot_in"] + hyd_stat["tot_out"]
 
     html_content = f"""<!DOCTYPE html>
 <html lang="es">
@@ -1826,6 +2036,7 @@ def generate_html_report(sessions, pricing, output_path=None):
         .badge-ws {{ background: rgba(56, 189, 248, 0.15); color: var(--primary); }}
         .badge-argon {{ background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.35); }}
         .badge-hydrogen {{ background: rgba(251, 191, 36, 0.15); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.35); }}
+        .badge-subflash {{ background: rgba(45, 212, 191, 0.14); color: #2dd4bf; border: 1px solid rgba(45, 212, 191, 0.35); }}
         
         /* Grid de Métricas Smartwatch / Fitness (8 tarjetas en 2 filas equilibradas de 4) */
         .fitness-grid {{
@@ -2270,10 +2481,10 @@ def generate_html_report(sessions, pricing, output_path=None):
                 <div class="fitness-sub">Valor: {arg_stat['costs']['argon_eur']:.2f} € · {arg_stat['cur_week_key']}: {format_tokens(arg_stat['week_tokens'])} · Desde {arg_stat['first_date']}</div>
             </div>
 
-            <div class="fitness-card" style="border-color: rgba(251, 191, 36, 0.45); background: linear-gradient(145deg, #1e293b, #422006);" title="Tokens consumidos con Gemini 4 Hydrogen (${hyd_stat['costs']['hydrogen_usd']:.2f} USD)">
+            <div class="fitness-card" style="border-color: rgba(251, 191, 36, 0.45); background: linear-gradient(145deg, #1e293b, #422006);" title="Tokens consumidos con Gemini 4 Hydrogen: Caché {hyd_stat['tot_cache']:,} ({hyd_cac_pct:.1f}%) · Nuevos {hyd_new_stat:,} ({hyd_stat['tot_in']:,} in + {hyd_stat['tot_out']:,} out) · Valor ${hyd_stat['costs']['hydrogen_usd']:.2f} USD">
                 <div class="fitness-label" style="color: #fbbf24;">💧 Gemini 4 Hydrogen</div>
-                <div class="fitness-val" style="color: #fbbf24;">{format_tokens(hyd_stat['tot_tokens'])}</div>
-                <div class="fitness-sub">Valor: {hyd_stat['costs']['hydrogen_eur']:.2f} € · {hyd_stat['cur_week_key']}: {format_tokens(hyd_stat['week_tokens'])} · Desde {hyd_stat['first_date']}</div>
+                <div class="fitness-val" style="color: #fbbf24;">{format_tokens(hyd_tot_stat)}</div>
+                <div class="fitness-sub">Valor: {hyd_stat['costs']['hydrogen_eur']:.2f} € · Caché: {hyd_cac_pct:.1f}% · Nuevos: {format_tokens(hyd_new_stat)}</div>
             </div>
 
             <div class="fitness-card" style="border-color: rgba(244, 114, 182, 0.4); background: linear-gradient(145deg, #1e293b, #3b0764);" title="Coste real ponderado combinando Flash + Argon + Hydrogen · Ahorro neto: {'+' if real_savings >= 0 else ''}{real_savings:.2f} € frente a {total_sub_eur:.2f} € ({num_months} × {sub_eur:.2f} €/mes)">
@@ -2608,8 +2819,16 @@ def generate_html_report(sessions, pricing, output_path=None):
                 cache: slice.map(w => w.cache),
                 new: slice.map(w => w.new),
                 costs: slice.map(w => w.costs),
+                fsub_cache: slice.map(w => w.fsub_cache || 0),
+                fsub_new: slice.map(w => w.fsub_new || 0),
+                fsub_tokens: slice.map(w => w.fsub_tokens || 0),
+                fsub_costs: slice.map(w => w.fsub_costs || 0),
+                argon_cache: slice.map(w => w.argon_cache || 0),
+                argon_new: slice.map(w => w.argon_new || 0),
                 argon_tokens: slice.map(w => w.argon_tokens || 0),
                 argon_costs: slice.map(w => w.argon_costs || 0),
+                hyd_cache: slice.map(w => w.hyd_cache || 0),
+                hyd_new: slice.map(w => w.hyd_new || 0),
                 hydrogen_tokens: slice.map(w => w.hydrogen_tokens || 0),
                 hydrogen_costs: slice.map(w => w.hydrogen_costs || 0),
                 pro_tokens: slice.map(w => w.pro_tokens || 0),
@@ -2629,44 +2848,71 @@ def generate_html_report(sessions, pricing, output_path=None):
         function buildStackedDatasets(src) {{
             const datasets = [
                 {{
-                    label: 'Caché Flash (Contexto) (M)',
+                    label: '⚡ Caché 3.x Flash (M)',
                     data: src.cache,
-                    backgroundColor: 'rgba(56, 189, 248, 0.65)',
+                    backgroundColor: 'rgba(56, 189, 248, 0.58)',
                     borderColor: '#38bdf8',
                     borderWidth: 1,
                     stack: 'tokens'
                 }},
                 {{
-                    label: 'Tokens Nuevos Flash (M)',
+                    label: '⚡ Nuevos 3.x Flash (M)',
                     data: src.new,
-                    backgroundColor: 'rgba(129, 140, 248, 0.85)',
+                    backgroundColor: 'rgba(129, 140, 248, 0.88)',
                     borderColor: '#818cf8',
-                    borderWidth: 1,
-                    stack: 'tokens'
-                }},
-                {{
-                    label: 'Uso Argon (Planes) (M)',
-                    data: src.argon_tokens || [],
-                    type: 'bar',
-                    backgroundColor: 'rgba(192, 132, 252, 0.85)',
-                    borderColor: '#c084fc',
-                    borderWidth: 1,
-                    stack: 'tokens'
-                }},
-                {{
-                    label: 'Uso Hydrogen (M)',
-                    data: src.hydrogen_tokens || [],
-                    type: 'bar',
-                    backgroundColor: 'rgba(251, 191, 36, 0.9)',
-                    borderColor: '#fbbf24',
                     borderWidth: 1,
                     stack: 'tokens'
                 }}
             ];
 
+            if (chartDataPayload.has_fsub_usage) {{
+                datasets.push({{
+                    label: '🤖 Subag. Flash (Browser/Img) (M)',
+                    data: src.fsub_tokens || [],
+                    type: 'bar',
+                    backgroundColor: 'rgba(45, 212, 191, 0.78)',
+                    borderColor: '#2dd4bf',
+                    borderWidth: 1,
+                    stack: 'tokens'
+                }});
+            }}
+
+            if (chartDataPayload.has_hyd_usage) {{
+                datasets.push(
+                    {{
+                        label: '💧 Caché Hydrogen (Contexto) (M)',
+                        data: src.hyd_cache || [],
+                        type: 'bar',
+                        backgroundColor: 'rgba(251, 191, 36, 0.62)',
+                        borderColor: '#fbbf24',
+                        borderWidth: 1,
+                        stack: 'tokens'
+                    }},
+                    {{
+                        label: '💧 Nuevos Hydrogen (M)',
+                        data: src.hyd_new || [],
+                        type: 'bar',
+                        backgroundColor: 'rgba(249, 115, 22, 0.92)',
+                        borderColor: '#f97316',
+                        borderWidth: 1,
+                        stack: 'tokens'
+                    }}
+                );
+            }}
+
+            datasets.push({{
+                label: '🧠 Argon (Planes) (M)',
+                data: src.argon_tokens || [],
+                type: 'bar',
+                backgroundColor: 'rgba(192, 132, 252, 0.85)',
+                borderColor: '#c084fc',
+                borderWidth: 1,
+                stack: 'tokens'
+            }});
+
             if (chartDataPayload.has_pro_usage) {{
                 datasets.push({{
-                    label: 'Uso Pro (M)',
+                    label: '🧠 Pro (M)',
                     data: src.pro_tokens || [],
                     type: 'bar',
                     backgroundColor: 'rgba(96, 165, 250, 0.85)',
@@ -2676,46 +2922,64 @@ def generate_html_report(sessions, pricing, output_path=None):
                 }});
             }}
 
-            datasets.push(
-                {{
-                    label: 'Valor 3.8 Flash (€)',
-                    data: src.costs,
+            datasets.push({{
+                label: 'Valor 3.x Flash (€)',
+                data: src.costs,
+                type: 'line',
+                borderColor: '#4ade80',
+                backgroundColor: 'rgba(74, 222, 128, 0.1)',
+                borderWidth: 2.2,
+                pointBackgroundColor: '#4ade80',
+                pointRadius: 2.5,
+                yAxisID: 'yCost',
+                tension: 0.25
+            }});
+
+            if (chartDataPayload.has_fsub_usage) {{
+                datasets.push({{
+                    label: 'Coste Subag. Flash (€)',
+                    data: src.fsub_costs || [],
                     type: 'line',
-                    borderColor: '#4ade80',
-                    backgroundColor: 'rgba(74, 222, 128, 0.1)',
-                    borderWidth: 2.5,
-                    pointBackgroundColor: '#4ade80',
-                    pointRadius: 3,
-                    yAxisID: 'yCost',
-                    tension: 0.25
-                }},
-                {{
-                    label: 'Coste Argon (€)',
-                    data: src.argon_costs || [],
-                    type: 'line',
-                    borderColor: '#f472b6',
-                    borderDash: [5, 4],
+                    borderColor: '#2dd4bf',
+                    borderDash: [4, 3],
                     backgroundColor: 'transparent',
-                    borderWidth: 2,
-                    pointBackgroundColor: '#f472b6',
-                    pointRadius: 3,
+                    borderWidth: 1.8,
+                    pointBackgroundColor: '#2dd4bf',
+                    pointRadius: 2.5,
                     yAxisID: 'yCost',
                     tension: 0.25
-                }},
-                {{
+                }});
+            }}
+
+            if (chartDataPayload.has_hyd_usage) {{
+                datasets.push({{
                     label: 'Coste Hydrogen (€)',
                     data: src.hydrogen_costs || [],
                     type: 'line',
                     borderColor: '#fb923c',
                     borderDash: [3, 3],
                     backgroundColor: 'transparent',
-                    borderWidth: 2,
+                    borderWidth: 2.2,
                     pointBackgroundColor: '#fb923c',
                     pointRadius: 3,
                     yAxisID: 'yCost',
                     tension: 0.25
-                }}
-            );
+                }});
+            }}
+
+            datasets.push({{
+                label: 'Coste Argon (€)',
+                data: src.argon_costs || [],
+                type: 'line',
+                borderColor: '#f472b6',
+                borderDash: [5, 4],
+                backgroundColor: 'transparent',
+                borderWidth: 2,
+                pointBackgroundColor: '#f472b6',
+                pointRadius: 2.5,
+                yAxisID: 'yCost',
+                tension: 0.25
+            }});
 
             if (chartDataPayload.has_pro_usage) {{
                 datasets.push({{
@@ -2727,7 +2991,7 @@ def generate_html_report(sessions, pricing, output_path=None):
                     backgroundColor: 'transparent',
                     borderWidth: 2,
                     pointBackgroundColor: '#93c5fd',
-                    pointRadius: 3,
+                    pointRadius: 2.5,
                     yAxisID: 'yCost',
                     tension: 0.25
                 }});
@@ -2782,6 +3046,7 @@ def generate_html_report(sessions, pricing, output_path=None):
                 const sData = chartDataPayload.scatter_days;
                 const labels = sData.map(d => d.label);
                 const flashTokenPoints = sData.map(d => d.flash_tokens ?? (d.cache + d.new));
+                const fsubTokenPoints = sData.map(d => d.fsub_tokens || 0);
                 const argonTokenPoints = sData.map(d => d.argon_tokens || 0);
                 const hydTokenPoints = sData.map(d => d.hydrogen_tokens || 0);
                 const proTokenPoints = sData.map(d => d.pro_tokens || 0);
@@ -2789,7 +3054,7 @@ def generate_html_report(sessions, pricing, output_path=None):
 
                 const scatterDatasets = [
                     {{
-                        label: '⚡ Gemini 3.x Flash (M)',
+                        label: '⚡ 3.x Flash (Chat) (M)',
                         data: flashTokenPoints,
                         backgroundColor: context => makeAreaGradient(context, '56, 189, 248', 0.24),
                         borderColor: '#38bdf8',
@@ -2841,6 +3106,26 @@ def generate_html_report(sessions, pricing, output_path=None):
                     }}
                 ];
 
+                if (chartDataPayload.has_fsub_usage) {{
+                    scatterDatasets.push({{
+                        label: '🤖 Subag. Flash (Browser/Img) (M)',
+                        data: fsubTokenPoints,
+                        borderColor: '#2dd4bf',
+                        backgroundColor: 'transparent',
+                        borderWidth: 1.9,
+                        fill: false,
+                        cubicInterpolationMode: 'monotone',
+                        tension: 0.34,
+                        pointRadius: 0,
+                        pointHoverRadius: 5,
+                        pointHitRadius: 12,
+                        pointBackgroundColor: '#2dd4bf',
+                        pointBorderColor: '#0b1120',
+                        pointBorderWidth: 2,
+                        yAxisID: 'y'
+                    }});
+                }}
+
                 if (chartDataPayload.has_pro_usage) {{
                     scatterDatasets.push({{
                         label: '🧠 Gemini Pro (M)',
@@ -2881,7 +3166,7 @@ def generate_html_report(sessions, pricing, output_path=None):
                     yAxisID: 'yCost'
                 }});
 
-                const maxModelTokens = Math.max(...flashTokenPoints, ...hydTokenPoints, ...argonTokenPoints, ...proTokenPoints, 20);
+                const maxModelTokens = Math.max(...flashTokenPoints, ...fsubTokenPoints, ...hydTokenPoints, ...argonTokenPoints, ...proTokenPoints, 20);
                 const maxRealCost = Math.max(...realCostPoints, 10);
 
                 timelineChartInstance = new Chart(ctx, {{
@@ -2990,13 +3275,16 @@ def generate_html_report(sessions, pricing, output_path=None):
                                             '  ↳ Caché: ' + (d.all_cache ?? d.cache) + ' M | Nuevos: ' + (d.all_new ?? d.new) + ' M'
                                         ];
                                         if ((d.flash_tokens || 0) > 0) {{
-                                            lines.push('  ↳ ⚡ Flash: ' + d.flash_tokens + ' M (~' + d.cost + ' €)');
+                                            lines.push('  ↳ ⚡ 3.x Flash: ' + d.flash_tokens + ' M (Caché: ' + d.cache + ' M | Nuevos: ' + d.new + ' M · ~' + d.cost + ' €)');
+                                        }}
+                                        if ((d.fsub_tokens || 0) > 0) {{
+                                            lines.push('  ↳ 🤖 Subag. Flash: ' + d.fsub_tokens + ' M (Caché: ' + (d.fsub_cache || 0) + ' M | Nuevos: ' + (d.fsub_new || 0) + ' M · ~' + (d.fsub_cost || 0) + ' €)');
                                         }}
                                         if ((d.hydrogen_tokens || 0) > 0) {{
-                                            lines.push('  ↳ 💧 Hydrogen: ' + d.hydrogen_tokens + ' M (~' + d.hydrogen_cost + ' €)');
+                                            lines.push('  ↳ 💧 Hydrogen: ' + d.hydrogen_tokens + ' M (Caché: ' + (d.hyd_cache || 0) + ' M | Nuevos: ' + (d.hyd_new || 0) + ' M · ~' + d.hydrogen_cost + ' €)');
                                         }}
                                         if ((d.argon_tokens || 0) > 0) {{
-                                            lines.push('  ↳ 🧠 Argon: ' + d.argon_tokens + ' M (~' + d.argon_cost + ' €)');
+                                            lines.push('  ↳ 🧠 Argon: ' + d.argon_tokens + ' M (Caché: ' + (d.argon_cache || 0) + ' M | Nuevos: ' + (d.argon_new || 0) + ' M · ~' + d.argon_cost + ' €)');
                                         }}
                                         if ((d.pro_tokens || 0) > 0) {{
                                             lines.push('  ↳ 🧠 Pro: ' + d.pro_tokens + ' M (~' + d.pro_cost + ' €)');
@@ -3061,7 +3349,7 @@ def generate_html_report(sessions, pricing, output_path=None):
                                 stepSize: 10,
                                 callback: v => v + ' €'
                             }},
-                            suggestedMax: Math.max(...(pData.costs || [50]), ...(pData.argon_costs || [0]), ...(pData.hydrogen_costs || [0]), ...(pData.pro_costs || [0]), 50) * 1.5,
+                            suggestedMax: Math.max(...(pData.costs || [50]), ...(pData.fsub_costs || [0]), ...(pData.argon_costs || [0]), ...(pData.hydrogen_costs || [0]), ...(pData.pro_costs || [0]), 50) * 1.5,
                             min: 0
                         }}
                     }},
@@ -3079,26 +3367,41 @@ def generate_html_report(sessions, pricing, output_path=None):
                                     return items[0].label;
                                 }},
                                 label: function(c) {{
+                                    if ((c.raw || 0) <= 0) return null;
                                     if (c.dataset.yAxisID === 'yCost') {{
-                                        return c.dataset.label + ': ' + c.raw + ' €';
+                                        return c.dataset.label + ': ' + Number(c.raw).toFixed(2) + ' €';
                                     }}
-                                    return c.dataset.label + ': ' + c.raw + ' M tokens';
+                                    return c.dataset.label + ': ' + Number(c.raw).toFixed(2) + ' M tokens';
                                 }},
                                 footer: function(items) {{
+                                    if (!items || !items.length) return [];
+                                    const idx = items[0].dataIndex;
                                     let totTokens = 0;
                                     let totCost = 0;
                                     items.forEach(function(item) {{
                                         if (item.dataset.yAxisID === 'yCost') {{
-                                            totCost += item.raw;
+                                            totCost += (item.raw || 0);
                                         }} else {{
-                                            totTokens += item.raw;
+                                            totTokens += (item.raw || 0);
                                         }}
                                     }});
-                                    return [
-                                        '─────────────────────',
-                                        'Total Real: ' + totTokens.toFixed(2) + ' M tokens',
-                                        'Valor Real Mix: ' + totCost.toFixed(2) + ' €'
-                                    ];
+                                    const lines = ['─────────────────────'];
+                                    const hCac = (pData.hyd_cache && pData.hyd_cache[idx]) || 0;
+                                    const hNew = (pData.hyd_new && pData.hyd_new[idx]) || 0;
+                                    const hTot = hCac + hNew;
+                                    if (hTot > 0) {{
+                                        const hPct = (hCac / hTot * 100).toFixed(1);
+                                        lines.push('💧 Hydrogen: ' + hTot.toFixed(2) + ' M (' + hPct + '% caché · Nuevos: ' + hNew.toFixed(2) + ' M)');
+                                    }}
+                                    const fsCac = (pData.fsub_cache && pData.fsub_cache[idx]) || 0;
+                                    const fsNew = (pData.fsub_new && pData.fsub_new[idx]) || 0;
+                                    const fsTot = fsCac + fsNew;
+                                    if (fsTot > 0) {{
+                                        lines.push('🤖 Subag. Flash: ' + fsTot.toFixed(2) + ' M (Caché: ' + fsCac.toFixed(2) + ' M · Nuevos: ' + fsNew.toFixed(2) + ' M)');
+                                    }}
+                                    lines.push('Total Real: ' + totTokens.toFixed(2) + ' M tokens');
+                                    lines.push('Valor Real Mix: ' + totCost.toFixed(2) + ' €');
+                                    return lines;
                                 }}
                             }}
                         }}
