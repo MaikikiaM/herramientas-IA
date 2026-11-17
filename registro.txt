@@ -93,3 +93,26 @@ SESIÓN: 17/11/2026 - IDENTIFICACIÓN POR PROTOBUF, SUBAGENTES FLASH Y DESGLOSE 
   - `monitor.py --all --html --no-open --no-color` y `--month --no-color`: OK (`0`), confirmando `flash_chat = 0.00 M` los días 13, 15, 16 y 17 Nov (y `0.41 M` el 14 Nov de `74dbf958`), recuperando `d4a5a46e` en Hydrogen y separando `Subagentes Flash (Browser/Img)` (`41.73 M`, `9.21 €`).
   - Verificación JSON/HTML (`verify_fix.py`, `check_ui_strings.py`) y sintaxis JS (`node --check`): todo OK (`NODE_JS_SYNTAX_EXIT=0`).
 ================================================================================
+
+================================================================================
+SESIÓN: 17/11/2026 (Noche) - SOPORTE PARA CLAUDE OPUS Y CLAUDE SONNET EN MONITOR-AI-TOKENS
+================================================================================
+- Prompts literales del usuario:
+  * [17/11/2026 23:03]: "serias capaz de decirme el numero de tokens que he gastado en mi sesion semanal si te digo que le quedan 3 dias y 2 hora spara resetearse?"
+  * [17/11/2026 23:05]: "No hay ninguna forma de ver cuando empiezan y acaban las sesiones semanales y de 5 horas a traves de los archivos como sí ves el numero de tokens?"
+  * [17/11/2026 23:06]: "no hace falta. Gracias"
+  * [17/11/2026 23:07]: "Hay alguna forma de registrar el uso de sonnet y opus tb?"
+  * [17/11/2026 23:08]: "Pues añadelos"
+
+- Cambios implementados:
+  - `tools/Monitor-AI-Tokens/pricing.json`: Añadidos `claude_opus` (`4.00` $ in / `20.00` $ out / `0.20` $ caché; Opus 5.5) y `claude_sonnet` (`2.00` $ in / `10.00` $ out / `0.10` $ caché; Sonnet 5.5).
+  - `tools/Monitor-AI-Tokens/monitor.py`:
+    * Mapeados enums protobuf de Antigravity en `PROTOBUF_MODEL_ENUM_MAP`: `1026` / `1402` -> `"opus"` (`Claude Opus 4.6 Thinking / 5.5 High`) y `1035` / `1405` -> `"sonnet"` (`Claude Sonnet 4.6 Thinking / 5.5 High`).
+    * Integrado el seguimiento separado (`opus_tokens`, `sonnet_tokens`, `opus_cache`/`opus_new`, `sonnet_cache`/`sonnet_new`, costes reales €) en `scan_antigravity_usage()`, `calculate_costs()`, `calculate_bucket_breakdown()`, `compute_analytics()`, `print_cli_report()` (`_print_cli_claude_block`) y `generate_html_report()`.
+    * Añadidos badges (`.badge-opus` `#fb7185`, `.badge-sonnet` `#e879f9`), reparto porcentual (`🤖 Reparto por Modelo`), tarjetas de tarifas en HTML, barras apiladas y líneas de coste condicionales en Chart.js (`14 Días`, `30 Días`, `Semanas`, `Meses`), y curvas suavizadas + tooltips detallados en `Histórico Diario Completo` (`scatter`).
+
+- Verificación:
+  - `python -m py_compile tools/Monitor-AI-Tokens/monitor.py`: OK (`0`).
+  - `python tools/Monitor-AI-Tokens/monitor.py --all --html --no-open --no-color` y `--month --no-color`: OK (`0`), contabilizando `100.77 M` (`60.80 €`, 5 sesiones desde 06/08/2026) en Claude Opus y `15.22 M` (`4.38 €`, 2 sesiones desde 13/08/2026) en Claude Sonnet dentro del Mix Real (`654.83 €` total).
+  - Validación de payload HTML/JSON y `node --check` sobre el `<script>` embebido de `reporte_consumo.html` (`verify_html_claude.py`): `ALL HTML/JSON/JS CHECKS PASSED` (sin `NaN`, exit code `0`).
+================================================================================

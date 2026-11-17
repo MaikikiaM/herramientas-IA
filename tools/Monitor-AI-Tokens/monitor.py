@@ -101,6 +101,18 @@ def load_pricing(pricing_path=None):
                 "cost_per_million_input_usd": 1.50,
                 "cost_per_million_output_usd": 7.50,
                 "cost_per_million_cached_usd": 0.075
+            },
+            "claude_opus": {
+                "display_name": "Claude Opus (4.6 / 5.5)",
+                "cost_per_million_input_usd": 4.00,
+                "cost_per_million_output_usd": 20.00,
+                "cost_per_million_cached_usd": 0.20
+            },
+            "claude_sonnet": {
+                "display_name": "Claude Sonnet (4.6 / 5.5)",
+                "cost_per_million_input_usd": 2.00,
+                "cost_per_million_output_usd": 10.00,
+                "cost_per_million_cached_usd": 0.10
             }
         }
     }
@@ -288,10 +300,10 @@ PROTOBUF_MODEL_ENUM_MAP = {
     1298: "flash",      # Gemini 3.7 Flash
     1318: "flash",      # Gemini 3.8 Flash (High)
     1319: "flash",      # Gemini 3.8 Flash (Medium)
-    1026: "flash",      # Claude Opus 4.6 (histórico)
-    1035: "flash",      # Claude Sonnet 4.6 (histórico)
-    1402: "flash",      # Claude Opus 5.5 (histórico)
-    1405: "flash",      # Claude Sonnet 5.5 (histórico)
+    1026: "opus",       # Claude Opus 4.6 (Thinking)
+    1402: "opus",       # Claude Opus 5.5 (High)
+    1035: "sonnet",     # Claude Sonnet 4.6 (Thinking)
+    1405: "sonnet",     # Claude Sonnet 5.5 (High)
 }
 
 def _read_pb_varint(buf, pos):
@@ -423,7 +435,9 @@ def scan_antigravity_usage(brain_dir=None):
                 "argon_in": 0, "argon_out": 0, "argon_cache": 0,
                 "hyd_in": 0, "hyd_out": 0, "hyd_cache": 0,
                 "pro_in": 0, "pro_out": 0, "pro_cache": 0,
-                "fsub_in": 0, "fsub_out": 0, "fsub_cache": 0
+                "fsub_in": 0, "fsub_out": 0, "fsub_cache": 0,
+                "opus_in": 0, "opus_out": 0, "opus_cache": 0,
+                "son_in": 0, "son_out": 0, "son_cache": 0
             }),
             "monthly_steps": defaultdict(int),
             "workspace": "General / CLI",
@@ -436,6 +450,8 @@ def scan_antigravity_usage(brain_dir=None):
             "has_hydrogen": False,
             "has_pro": False,
             "has_flash_sub": False,
+            "has_opus": False,
+            "has_sonnet": False,
             "has_exec_models": False,
             "is_plan": False,
             "first_argon_dt": None,
@@ -444,6 +460,8 @@ def scan_antigravity_usage(brain_dir=None):
             "hydrogen_tokens": {"in": 0, "out": 0, "cache": 0, "total": 0},
             "pro_tokens": {"in": 0, "out": 0, "cache": 0, "total": 0},
             "flash_sub_tokens": {"in": 0, "out": 0, "cache": 0, "total": 0},
+            "opus_tokens": {"in": 0, "out": 0, "cache": 0, "total": 0},
+            "sonnet_tokens": {"in": 0, "out": 0, "cache": 0, "total": 0},
             "flash_tokens": {"in": 0, "out": 0, "cache": 0, "total": 0},
             "model_timeline": []
         }
@@ -510,6 +528,10 @@ def scan_antigravity_usage(brain_dir=None):
                                     current_model = "argon"
                                 elif "hydrogen" in target_mod:
                                     current_model = "hydrogen"
+                                elif "opus" in target_mod:
+                                    current_model = "opus"
+                                elif "sonnet" in target_mod:
+                                    current_model = "sonnet"
                                 elif "pro" in target_mod:
                                     current_model = "pro"
                                 else:
@@ -557,6 +579,10 @@ def scan_antigravity_usage(brain_dir=None):
                         session_data["has_pro"] = True
                     elif step_model == "flash_sub":
                         session_data["has_flash_sub"] = True
+                    elif step_model == "opus":
+                        session_data["has_opus"] = True
+                    elif step_model == "sonnet":
+                        session_data["has_sonnet"] = True
 
                     # Extraer tokens
                     in_tok = entry.get('input_tokens') or 0
@@ -583,6 +609,8 @@ def scan_antigravity_usage(brain_dir=None):
                             "hydrogen": session_data["hydrogen_tokens"],
                             "pro": session_data["pro_tokens"],
                             "flash_sub": session_data["flash_sub_tokens"],
+                            "opus": session_data["opus_tokens"],
+                            "sonnet": session_data["sonnet_tokens"],
                             "flash": session_data["flash_tokens"]
                         }
                         b = bucket_map[step_model]
@@ -602,7 +630,7 @@ def scan_antigravity_usage(brain_dir=None):
                         day_row["in"] += in_tok
                         day_row["out"] += out_tok
                         day_row["cache"] += cache_tok
-                        prefix_map = {"argon": "argon_", "hydrogen": "hyd_", "pro": "pro_", "flash_sub": "fsub_"}
+                        prefix_map = {"argon": "argon_", "hydrogen": "hyd_", "pro": "pro_", "flash_sub": "fsub_", "opus": "opus_", "sonnet": "son_"}
                         if step_model in prefix_map:
                             pref = prefix_map[step_model]
                             day_row[f"{pref}in"] += in_tok
@@ -666,13 +694,19 @@ def scan_antigravity_usage(brain_dir=None):
     for s in sessions:
         if not s["has_exec_models"] and not s["model_hints"] and s["first_timestamp"] and not s["has_flash_sub"]:
             inherited = resolve_inherited_model(s["conversation_id"], s["first_timestamp"])
-            if inherited in ("argon", "hydrogen", "pro"):
+            if inherited in ("argon", "hydrogen", "pro", "opus", "sonnet"):
                 # Reasignar los tokens de flash al modelo heredado del padre
                 tot_in = s["total_input_tokens"]
                 tot_out = s["total_output_tokens"]
                 tot_cac = s["total_cached_tokens"]
                 s["flash_tokens"] = {"in": 0, "out": 0, "cache": 0, "total": 0}
-                target_bucket = {"argon": s["argon_tokens"], "hydrogen": s["hydrogen_tokens"], "pro": s["pro_tokens"]}[inherited]
+                target_bucket = {
+                    "argon": s["argon_tokens"],
+                    "hydrogen": s["hydrogen_tokens"],
+                    "pro": s["pro_tokens"],
+                    "opus": s["opus_tokens"],
+                    "sonnet": s["sonnet_tokens"],
+                }[inherited]
                 target_bucket["in"] = tot_in
                 target_bucket["out"] = tot_out
                 target_bucket["cache"] = tot_cac
@@ -685,7 +719,11 @@ def scan_antigravity_usage(brain_dir=None):
                     s["first_hydrogen_dt"] = s["first_timestamp"]
                 elif inherited == "pro":
                     s["has_pro"] = True
-                pref = {"argon": "argon_", "hydrogen": "hyd_", "pro": "pro_"}[inherited]
+                elif inherited == "opus":
+                    s["has_opus"] = True
+                elif inherited == "sonnet":
+                    s["has_sonnet"] = True
+                pref = {"argon": "argon_", "hydrogen": "hyd_", "pro": "pro_", "opus": "opus_", "sonnet": "son_"}[inherited]
                 for day_row in s["daily_usage"].values():
                     day_row[f"{pref}in"] = day_row["in"]
                     day_row[f"{pref}out"] = day_row["out"]
@@ -697,6 +735,10 @@ def scan_antigravity_usage(brain_dir=None):
             used.append("hydrogen")
         if s["argon_tokens"]["total"] > 0 or s["has_argon"]:
             used.append("argon")
+        if s["opus_tokens"]["total"] > 0 or s["has_opus"]:
+            used.append("opus")
+        if s["sonnet_tokens"]["total"] > 0 or s["has_sonnet"]:
+            used.append("sonnet")
         if s["pro_tokens"]["total"] > 0 or s["has_pro"]:
             used.append("pro")
         if s["flash_sub_tokens"]["total"] > 0 or s["has_flash_sub"]:
@@ -712,6 +754,10 @@ def scan_antigravity_usage(brain_dir=None):
         elif "hydrogen" in used and "argon" in used:
             # Elegir el que más tokens consumió o el último usado
             s["inferred_tier"] = "hydrogen" if s["hydrogen_tokens"]["total"] >= s["argon_tokens"]["total"] else "argon"
+        elif "opus" in used and "flash" not in used:
+            s["inferred_tier"] = "opus"
+        elif "sonnet" in used and "flash" not in used:
+            s["inferred_tier"] = "sonnet"
         elif "pro" in used and "flash" not in used:
             s["inferred_tier"] = "pro"
         elif "flash_sub" in used and "flash" not in used:
@@ -745,6 +791,8 @@ def calculate_costs(input_tokens, output_tokens, cached_tokens, pricing, num_mon
     flash_cost_usd, flash_cost_eur, cache_savings_flash_eur = model_cost("gemini_flash", 0.75, 3.75, 0.075)
     argon_cost_usd, argon_cost_eur, cache_savings_argon_eur = model_cost("gemini_argon", 2.00, 10.00, 0.10)
     hydrogen_cost_usd, hydrogen_cost_eur, cache_savings_hydrogen_eur = model_cost("gemini_hydrogen", 1.50, 7.50, 0.075)
+    opus_cost_usd, opus_cost_eur, cache_savings_opus_eur = model_cost("claude_opus", 4.00, 20.00, 0.20)
+    sonnet_cost_usd, sonnet_cost_eur, cache_savings_sonnet_eur = model_cost("claude_sonnet", 2.00, 10.00, 0.10)
 
     sub_eur = pricing.get("subscription", {}).get("monthly_cost_eur", 21.99)
     eff_months = max(1, num_months)
@@ -759,10 +807,16 @@ def calculate_costs(input_tokens, output_tokens, cached_tokens, pricing, num_mon
         "argon_eur": argon_cost_eur,
         "hydrogen_usd": hydrogen_cost_usd,
         "hydrogen_eur": hydrogen_cost_eur,
+        "opus_usd": opus_cost_usd,
+        "opus_eur": opus_cost_eur,
+        "sonnet_usd": sonnet_cost_usd,
+        "sonnet_eur": sonnet_cost_eur,
         "cache_savings_pro_eur": cache_savings_pro_eur,
         "cache_savings_flash_eur": cache_savings_flash_eur,
         "cache_savings_argon_eur": cache_savings_argon_eur,
         "cache_savings_hydrogen_eur": cache_savings_hydrogen_eur,
+        "cache_savings_opus_eur": cache_savings_opus_eur,
+        "cache_savings_sonnet_eur": cache_savings_sonnet_eur,
         "subscription_eur": sub_eur,
         "period_subscription_eur": period_sub_eur,
         "num_months": eff_months,
@@ -770,10 +824,14 @@ def calculate_costs(input_tokens, output_tokens, cached_tokens, pricing, num_mon
         "savings_flash_eur": flash_cost_eur - period_sub_eur,
         "savings_argon_eur": argon_cost_eur - period_sub_eur,
         "savings_hydrogen_eur": hydrogen_cost_eur - period_sub_eur,
+        "savings_opus_eur": opus_cost_eur - period_sub_eur,
+        "savings_sonnet_eur": sonnet_cost_eur - period_sub_eur,
         "roi_pro_pct": (pro_cost_eur / period_sub_eur * 100) if period_sub_eur > 0 else 0,
         "roi_flash_pct": (flash_cost_eur / period_sub_eur * 100) if period_sub_eur > 0 else 0,
         "roi_argon_pct": (argon_cost_eur / period_sub_eur * 100) if period_sub_eur > 0 else 0,
-        "roi_hydrogen_pct": (hydrogen_cost_eur / period_sub_eur * 100) if period_sub_eur > 0 else 0
+        "roi_hydrogen_pct": (hydrogen_cost_eur / period_sub_eur * 100) if period_sub_eur > 0 else 0,
+        "roi_opus_pct": (opus_cost_eur / period_sub_eur * 100) if period_sub_eur > 0 else 0,
+        "roi_sonnet_pct": (sonnet_cost_eur / period_sub_eur * 100) if period_sub_eur > 0 else 0
     }
 
 def calculate_bucket_breakdown(data_dict, pricing):
@@ -798,18 +856,31 @@ def calculate_bucket_breakdown(data_dict, pricing):
     fsub_out = data_dict.get("fsub_out", 0)
     fsub_cac = data_dict.get("fsub_cache", 0)
 
-    flash_in = max(0, tot_in - arg_in - hyd_in - pro_in - fsub_in)
-    flash_out = max(0, tot_out - arg_out - hyd_out - pro_out - fsub_out)
-    flash_cac = max(0, tot_cac - arg_cac - hyd_cac - pro_cac - fsub_cac)
+    opus_in = data_dict.get("opus_in", 0)
+    opus_out = data_dict.get("opus_out", 0)
+    opus_cac = data_dict.get("opus_cache", 0)
+
+    son_in = data_dict.get("son_in", 0)
+    son_out = data_dict.get("son_out", 0)
+    son_cac = data_dict.get("son_cache", 0)
+
+    flash_in = max(0, tot_in - arg_in - hyd_in - pro_in - fsub_in - opus_in - son_in)
+    flash_out = max(0, tot_out - arg_out - hyd_out - pro_out - fsub_out - opus_out - son_out)
+    flash_cac = max(0, tot_cac - arg_cac - hyd_cac - pro_cac - fsub_cac - opus_cac - son_cac)
 
     c_flash = calculate_costs(flash_in, flash_out, flash_cac, pricing)
     c_fsub = calculate_costs(fsub_in, fsub_out, fsub_cac, pricing)
     c_argon = calculate_costs(arg_in, arg_out, arg_cac, pricing)
     c_hyd = calculate_costs(hyd_in, hyd_out, hyd_cac, pricing)
     c_pro = calculate_costs(pro_in, pro_out, pro_cac, pricing)
+    c_opus = calculate_costs(opus_in, opus_out, opus_cac, pricing)
+    c_son = calculate_costs(son_in, son_out, son_cac, pricing)
 
     fsub_eur = c_fsub["flash_eur"]
-    real_eur = c_flash["flash_eur"] + fsub_eur + c_argon["argon_eur"] + c_hyd["hydrogen_eur"] + c_pro["pro_eur"]
+    real_eur = (
+        c_flash["flash_eur"] + fsub_eur + c_argon["argon_eur"] +
+        c_hyd["hydrogen_eur"] + c_pro["pro_eur"] + c_opus["opus_eur"] + c_son["sonnet_eur"]
+    )
     return {
         "flash_in": flash_in, "flash_out": flash_out, "flash_cache": flash_cac,
         "flash_new": flash_in + flash_out,
@@ -826,11 +897,19 @@ def calculate_bucket_breakdown(data_dict, pricing):
         "pro_in": pro_in, "pro_out": pro_out, "pro_cache": pro_cac,
         "pro_new": pro_in + pro_out,
         "pro_total": pro_in + pro_out + pro_cac,
+        "opus_in": opus_in, "opus_out": opus_out, "opus_cache": opus_cac,
+        "opus_new": opus_in + opus_out,
+        "opus_total": opus_in + opus_out + opus_cac,
+        "sonnet_in": son_in, "sonnet_out": son_out, "sonnet_cache": son_cac,
+        "sonnet_new": son_in + son_out,
+        "sonnet_total": son_in + son_out + son_cac,
         "flash_eur": c_flash["flash_eur"],
         "fsub_eur": fsub_eur,
         "argon_eur": c_argon["argon_eur"],
         "hydrogen_eur": c_hyd["hydrogen_eur"],
         "pro_eur": c_pro["pro_eur"],
+        "opus_eur": c_opus["opus_eur"],
+        "sonnet_eur": c_son["sonnet_eur"],
         "real_eur": real_eur
     }
 
@@ -1005,6 +1084,8 @@ def compute_analytics(sessions, pricing):
             "hyd_in": 0, "hyd_out": 0, "hyd_cache": 0,
             "pro_in": 0, "pro_out": 0, "pro_cache": 0,
             "fsub_in": 0, "fsub_out": 0, "fsub_cache": 0,
+            "opus_in": 0, "opus_out": 0, "opus_cache": 0,
+            "son_in": 0, "son_out": 0, "son_cache": 0,
             "sessions": set(), "workspaces": defaultdict(int)
         }
 
@@ -1067,6 +1148,8 @@ def compute_analytics(sessions, pricing):
                 "hyd_in", "hyd_out", "hyd_cache",
                 "pro_in", "pro_out", "pro_cache",
                 "fsub_in", "fsub_out", "fsub_cache",
+                "opus_in", "opus_out", "opus_cache",
+                "son_in", "son_out", "son_cache",
             )
             for target_bucket in (daily_stats[d_key], weekly_stats[w_key], monthly_stats[m_key]):
                 for nf in numeric_fields:
@@ -1280,6 +1363,8 @@ def compute_analytics(sessions, pricing):
     hydrogen_stats = build_model_stats("has_hydrogen", "hydrogen_tokens", "first_hydrogen_dt", "hyd_", "Sin uso")
     pro_stats = build_model_stats("has_pro", "pro_tokens", "first_timestamp", "pro_", "Sin uso")
     flash_sub_stats = build_model_stats("has_flash_sub", "flash_sub_tokens", "first_timestamp", "fsub_", "Sin uso")
+    opus_stats = build_model_stats("has_opus", "opus_tokens", "first_timestamp", "opus_", "Sin uso")
+    sonnet_stats = build_model_stats("has_sonnet", "sonnet_tokens", "first_timestamp", "son_", "Sin uso")
 
     global_raw_bucket = {
         "in": tot_in_all, "out": tot_out_all, "cache": tot_cache_all,
@@ -1287,6 +1372,8 @@ def compute_analytics(sessions, pricing):
         "hyd_in": hydrogen_stats["tot_in"], "hyd_out": hydrogen_stats["tot_out"], "hyd_cache": hydrogen_stats["tot_cache"],
         "pro_in": pro_stats["tot_in"], "pro_out": pro_stats["tot_out"], "pro_cache": pro_stats["tot_cache"],
         "fsub_in": flash_sub_stats["tot_in"], "fsub_out": flash_sub_stats["tot_out"], "fsub_cache": flash_sub_stats["tot_cache"],
+        "opus_in": opus_stats["tot_in"], "opus_out": opus_stats["tot_out"], "opus_cache": opus_stats["tot_cache"],
+        "son_in": sonnet_stats["tot_in"], "son_out": sonnet_stats["tot_out"], "son_cache": sonnet_stats["tot_cache"],
     }
     global_breakdown = calculate_bucket_breakdown(global_raw_bucket, pricing)
     active_months_count = sum(
@@ -1322,6 +1409,8 @@ def compute_analytics(sessions, pricing):
         "hydrogen": hydrogen_stats,
         "pro": pro_stats,
         "flash_sub": flash_sub_stats,
+        "opus": opus_stats,
+        "sonnet": sonnet_stats,
         "global_breakdown": global_breakdown,
         "num_months": num_months,
         "monthly_sub_eur": sub_eur,
@@ -1385,11 +1474,22 @@ def print_cli_report(sessions, pricing, filter_month=False):
     print(f"  • Comparativa con Gemini 4 Hydrogen     : {costs['hydrogen_usd']:8.2f} $  (~ {Colors.YELLOW}{Colors.BOLD}{costs['hydrogen_eur']:.2f} €{Colors.RESET})  {Colors.DIM}[Tarifa oficial $1.50 / $7.50 / $0.075]{Colors.RESET}")
     print(f"  • Comparativa con Gemini Pro            : {costs['pro_usd']:8.2f} $  (~ {Colors.BLUE}{costs['pro_eur']:.2f} €{Colors.RESET})  {Colors.DIM}[Si hubieras usado modo Pro]{Colors.RESET}")
     print(f"  • Comparativa con Gemini 4 Argon        : {costs['argon_usd']:8.2f} $  (~ {Colors.MAGENTA}{costs['argon_eur']:.2f} €{Colors.RESET})  {Colors.DIM}[Tarifa oficial $2.00 / $10.00 / $0.10]{Colors.RESET}")
-    print(f"  • {Colors.BOLD}Valor API Real Mix (Según modelo usado){Colors.RESET}: ~ {Colors.GREEN}{Colors.BOLD}{real_eur:.2f} €{Colors.RESET}  {Colors.DIM}[Flash 3.x: {period_breakdown['flash_eur']:.2f}€ + Subag.Flash: {period_breakdown['fsub_eur']:.2f}€ + Argon: {period_breakdown['argon_eur']:.2f}€ + Hydrogen: {period_breakdown['hydrogen_eur']:.2f}€]{Colors.RESET}")
+    mix_parts = [
+        f"Flash 3.x: {period_breakdown['flash_eur']:.2f}€",
+        f"Subag.Flash: {period_breakdown['fsub_eur']:.2f}€",
+        f"Argon: {period_breakdown['argon_eur']:.2f}€",
+        f"Hydrogen: {period_breakdown['hydrogen_eur']:.2f}€",
+    ]
+    if period_breakdown.get("opus_eur", 0) > 0:
+        mix_parts.append(f"Opus: {period_breakdown['opus_eur']:.2f}€")
+    if period_breakdown.get("sonnet_eur", 0) > 0:
+        mix_parts.append(f"Sonnet: {period_breakdown['sonnet_eur']:.2f}€")
+    print(f"  • {Colors.BOLD}Valor API Real Mix (Según modelo usado){Colors.RESET}: ~ {Colors.GREEN}{Colors.BOLD}{real_eur:.2f} €{Colors.RESET}  {Colors.DIM}[{' + '.join(mix_parts)}]{Colors.RESET}")
     print(f"  {Colors.DIM}↳ Tarifas / 1M (3.8 Flash):  Entrada $0.75 (~0.69€) | Salida $3.75 (~3.45€) | Caché (-90%) $0.075 (~0.069€){Colors.RESET}")
     print(f"  {Colors.DIM}↳ Tarifas / 1M (4 Hydrogen): Entrada $1.50 (~1.38€) | Salida $7.50 (~6.90€) | Caché (-95%) $0.075 (~0.069€){Colors.RESET}")
     print(f"  {Colors.DIM}↳ Tarifas / 1M (Pro):        Entrada $1.25 (~1.15€) | Salida $5.00 (~4.60€) | Caché (-75%) $0.3125 (~0.29€){Colors.RESET}")
     print(f"  {Colors.DIM}↳ Tarifas / 1M (4 Argon):    Entrada $2.00 (~1.84€) | Salida $10.00 (~9.20€) | Caché Implícito $0.10 (~0.092€){Colors.RESET}")
+    print(f"  {Colors.DIM}↳ Tarifas / 1M (Opus/Sonnet): Opus $4.00/$20.00/$0.20 (4.6: $5/$25/$0.50) | Sonnet $2.00/$10.00/$0.10 (4.6: $3/$15/$0.30){Colors.RESET}")
 
     cache_pct = (tot_cache / total_tokens * 100) if total_tokens > 0 else 0
     print(f"\n{Colors.BOLD}⚡ IMPACTO DEL CONTEXT CACHING DE GOOGLE (Abaratamiento de contexto):{Colors.RESET}")
@@ -1435,6 +1535,22 @@ def print_cli_report(sessions, pricing, filter_month=False):
         print(f"  • 📊 {Colors.BOLD}Consumo acumulado{Colors.RESET}          : {Colors.CYAN}{format_tokens(fs_tot)}{Colors.RESET} tokens ({format_tokens(fsub_data['week_tokens'])} en {fsub_data.get('cur_week_key', 'semana actual')}) · {fsub_data['sessions_count']} subagentes")
         print(f"  • 🧩 {Colors.BOLD}Contexto vs Nuevos{Colors.RESET}         : Caché {format_tokens(fs_cac)} ({fs_pct:.1f}%) | Nuevos {format_tokens(fs_new)} · ~{fsub_data['costs']['flash_eur']:.2f} €")
         print(f"  {Colors.DIM}↳ Llamados internamente por Antigravity aunque tu chat principal esté en Gemini 4 Hydrogen.{Colors.RESET}")
+
+    def _print_cli_claude_block(header_txt, data, cost_key, rate_note):
+        if not data or data.get("sessions_count", 0) <= 0:
+            return
+        c_tot = data["tot_tokens"]
+        c_cac = data["tot_cache"]
+        c_new = data["tot_in"] + data["tot_out"]
+        c_pct = (c_cac / c_tot * 100) if c_tot > 0 else 0
+        print(f"\n{Colors.BOLD}{header_txt}:{Colors.RESET}")
+        print(f"  • 📅 {Colors.BOLD}Primer uso detectado{Colors.RESET}       : {data['first_date']} ({data.get('first_week_label', '')}) · {data['sessions_count']} conversaciones")
+        print(f"  • 📊 {Colors.BOLD}Consumo acumulado total{Colors.RESET}    : {Colors.YELLOW}{format_tokens(c_tot)}{Colors.RESET} tokens ({format_tokens(data['week_tokens'])} en {data.get('cur_week_key', 'semana actual')})")
+        print(f"  • 🧩 {Colors.BOLD}Contexto vs Nuevos{Colors.RESET}         : Caché {Colors.CYAN}{format_tokens(c_cac)}{Colors.RESET} ({c_pct:.1f}%) | Nuevos {format_tokens(c_new)} ({format_tokens(data['tot_in'])} in + {format_tokens(data['tot_out'])} out)")
+        print(f"  • 💰 {Colors.BOLD}Valor API comercial{Colors.RESET}        : {Colors.MAGENTA}{data['costs'][cost_key]:.2f} €{Colors.RESET} {Colors.DIM}[{rate_note}]{Colors.RESET}")
+
+    _print_cli_claude_block("🟠 CLAUDE OPUS (4.6 Thinking / 5.5 High)", analytics.get("opus", {}), "opus_eur", "$4.00 in / $20.00 out / $0.20 caché (4.6: $5/$25/$0.50)")
+    _print_cli_claude_block("🟣 CLAUDE SONNET (4.6 Thinking / 5.5 High)", analytics.get("sonnet", {}), "sonnet_eur", "$2.00 in / $10.00 out / $0.10 caché (4.6: $3/$15/$0.30)")
 
     meses_txt = "1 mes" if num_months == 1 else f"{num_months} meses"
     cuota_desc = f"{period_sub_eur:.2f} € ({meses_txt} × {sub_eur:.2f} €/mes)" if num_months > 1 else f"{sub_eur:.2f} € / mes"
@@ -1560,6 +1676,14 @@ def generate_html_report(sessions, pricing, output_path=None):
             "hyd_new": round(bd["hyd_new"] / 1_000_000, 2),
             "hydrogen_tokens": round(bd["hydrogen_total"] / 1_000_000, 2),
             "hydrogen_cost": round(bd["hydrogen_eur"], 2),
+            "opus_cache": round(bd["opus_cache"] / 1_000_000, 2),
+            "opus_new": round(bd["opus_new"] / 1_000_000, 2),
+            "opus_tokens": round(bd["opus_total"] / 1_000_000, 2),
+            "opus_cost": round(bd["opus_eur"], 2),
+            "sonnet_cache": round(bd["sonnet_cache"] / 1_000_000, 2),
+            "sonnet_new": round(bd["sonnet_new"] / 1_000_000, 2),
+            "sonnet_tokens": round(bd["sonnet_total"] / 1_000_000, 2),
+            "sonnet_cost": round(bd["sonnet_eur"], 2),
             "pro_tokens": round(bd["pro_total"] / 1_000_000, 2),
             "pro_cost": round(bd["pro_eur"], 2),
             "real_cost": round(bd["real_eur"], 2),
@@ -1571,6 +1695,8 @@ def generate_html_report(sessions, pricing, output_path=None):
             "fsub_cache": [], "fsub_new": [], "fsub_tokens": [], "fsub_costs": [],
             "argon_cache": [], "argon_new": [], "argon_tokens": [], "argon_costs": [],
             "hyd_cache": [], "hyd_new": [], "hydrogen_tokens": [], "hydrogen_costs": [],
+            "opus_cache": [], "opus_new": [], "opus_tokens": [], "opus_costs": [],
+            "sonnet_cache": [], "sonnet_new": [], "sonnet_tokens": [], "sonnet_costs": [],
             "pro_tokens": [], "pro_costs": []
         }
 
@@ -1591,6 +1717,14 @@ def generate_html_report(sessions, pricing, output_path=None):
         series["hyd_new"].append(pt["hyd_new"])
         series["hydrogen_tokens"].append(pt["hydrogen_tokens"])
         series["hydrogen_costs"].append(pt["hydrogen_cost"])
+        series["opus_cache"].append(pt["opus_cache"])
+        series["opus_new"].append(pt["opus_new"])
+        series["opus_tokens"].append(pt["opus_tokens"])
+        series["opus_costs"].append(pt["opus_cost"])
+        series["sonnet_cache"].append(pt["sonnet_cache"])
+        series["sonnet_new"].append(pt["sonnet_new"])
+        series["sonnet_tokens"].append(pt["sonnet_tokens"])
+        series["sonnet_costs"].append(pt["sonnet_cost"])
         series["pro_tokens"].append(pt["pro_tokens"])
         series["pro_costs"].append(pt["pro_cost"])
 
@@ -1687,7 +1821,11 @@ def generate_html_report(sessions, pricing, output_path=None):
             model_tags.append('<span class="badge badge-argon" style="font-size:10px;padding:1px 6px;">Argon</span>')
         if pt["fsub_tokens"] > 0:
             model_tags.append('<span class="badge badge-subflash" style="font-size:10px;padding:1px 6px;">Subag. Flash</span>')
-        if (pt["cache"] + pt["new"]) > 0 and (pt["hydrogen_tokens"] > 0 or pt["argon_tokens"] > 0 or pt["fsub_tokens"] > 0):
+        if pt.get("opus_tokens", 0) > 0:
+            model_tags.append('<span class="badge badge-opus" style="font-size:10px;padding:1px 6px;">Opus</span>')
+        if pt.get("sonnet_tokens", 0) > 0:
+            model_tags.append('<span class="badge badge-sonnet" style="font-size:10px;padding:1px 6px;">Sonnet</span>')
+        if (pt["cache"] + pt["new"]) > 0 and (pt["hydrogen_tokens"] > 0 or pt["argon_tokens"] > 0 or pt["fsub_tokens"] > 0 or pt.get("opus_tokens", 0) > 0 or pt.get("sonnet_tokens", 0) > 0):
             model_tags.append('<span class="badge badge-success" style="font-size:10px;padding:1px 6px;">3.x Flash</span>')
         tags_html = (" " + " ".join(model_tags)) if model_tags else ""
         daily_rows.append(f"""
@@ -1770,6 +1908,8 @@ def generate_html_report(sessions, pricing, output_path=None):
             calculate_costs(s["flash_sub_tokens"]["in"], s["flash_sub_tokens"]["out"], s["flash_sub_tokens"]["cache"], pricing)["flash_eur"] +
             calculate_costs(s["argon_tokens"]["in"], s["argon_tokens"]["out"], s["argon_tokens"]["cache"], pricing)["argon_eur"] +
             calculate_costs(s["hydrogen_tokens"]["in"], s["hydrogen_tokens"]["out"], s["hydrogen_tokens"]["cache"], pricing)["hydrogen_eur"] +
+            calculate_costs(s["opus_tokens"]["in"], s["opus_tokens"]["out"], s["opus_tokens"]["cache"], pricing)["opus_eur"] +
+            calculate_costs(s["sonnet_tokens"]["in"], s["sonnet_tokens"]["out"], s["sonnet_tokens"]["cache"], pricing)["sonnet_eur"] +
             calculate_costs(s["pro_tokens"]["in"], s["pro_tokens"]["out"], s["pro_tokens"]["cache"], pricing)["pro_eur"]
         )
 
@@ -1779,6 +1919,10 @@ def generate_html_report(sessions, pricing, output_path=None):
             badge_parts.append('<span class="badge badge-hydrogen">💧 Gemini 4 Hydrogen</span>')
         if "argon" in used_mods:
             badge_parts.append('<span class="badge badge-argon">🧠 Gemini 4 Argon</span>')
+        if "opus" in used_mods:
+            badge_parts.append('<span class="badge badge-opus">🟠 Claude Opus</span>')
+        if "sonnet" in used_mods:
+            badge_parts.append('<span class="badge badge-sonnet">🟣 Claude Sonnet</span>')
         if "pro" in used_mods:
             badge_parts.append('<span class="badge badge-ws">🧠 Gemini Pro</span>')
         if "flash_sub" in used_mods:
@@ -1830,6 +1974,14 @@ def generate_html_report(sessions, pricing, output_path=None):
             "hyd_new": pt["hyd_new"],
             "hydrogen_tokens": pt["hydrogen_tokens"],
             "hydrogen_costs": pt["hydrogen_cost"],
+            "opus_cache": pt["opus_cache"],
+            "opus_new": pt["opus_new"],
+            "opus_tokens": pt["opus_tokens"],
+            "opus_costs": pt["opus_cost"],
+            "sonnet_cache": pt["sonnet_cache"],
+            "sonnet_new": pt["sonnet_new"],
+            "sonnet_tokens": pt["sonnet_tokens"],
+            "sonnet_costs": pt["sonnet_cost"],
             "pro_tokens": pt["pro_tokens"],
             "pro_costs": pt["pro_cost"]
         })
@@ -1847,6 +1999,8 @@ def generate_html_report(sessions, pricing, output_path=None):
             "hyd_in": 0, "hyd_out": 0, "hyd_cache": 0,
             "pro_in": 0, "pro_out": 0, "pro_cache": 0,
             "fsub_in": 0, "fsub_out": 0, "fsub_cache": 0,
+            "opus_in": 0, "opus_out": 0, "opus_cache": 0,
+            "son_in": 0, "son_out": 0, "son_cache": 0,
             "sessions": set(), "workspaces": {}
         }
         while cur_sc_dt <= last_sc_dt:
@@ -1883,6 +2037,14 @@ def generate_html_report(sessions, pricing, output_path=None):
                 "hyd_cache": pt["hyd_cache"],
                 "hyd_new": pt["hyd_new"],
                 "hydrogen_cost": pt["hydrogen_cost"],
+                "opus_tokens": pt["opus_tokens"],
+                "opus_cache": pt["opus_cache"],
+                "opus_new": pt["opus_new"],
+                "opus_cost": pt["opus_cost"],
+                "sonnet_tokens": pt["sonnet_tokens"],
+                "sonnet_cache": pt["sonnet_cache"],
+                "sonnet_new": pt["sonnet_new"],
+                "sonnet_cost": pt["sonnet_cost"],
                 "pro_tokens": pt["pro_tokens"],
                 "pro_cost": pt["pro_cost"]
             })
@@ -1917,6 +2079,16 @@ def generate_html_report(sessions, pricing, output_path=None):
         model_split_items.append(
             make_split_item("flash_sub", "🤖 Subagentes Flash (Browser/Img)", "fsub_total", "fsub_cache", "fsub_new", "fsub_eur", "#2dd4bf")
         )
+    has_opus_usage = g_bd["opus_total"] > 0
+    if has_opus_usage:
+        model_split_items.append(
+            make_split_item("opus", "🟠 Claude Opus", "opus_total", "opus_cache", "opus_new", "opus_eur", "#fb7185")
+        )
+    has_sonnet_usage = g_bd["sonnet_total"] > 0
+    if has_sonnet_usage:
+        model_split_items.append(
+            make_split_item("sonnet", "🟣 Claude Sonnet", "sonnet_total", "sonnet_cache", "sonnet_new", "sonnet_eur", "#e879f9")
+        )
     has_hyd_usage = g_bd["hydrogen_total"] > 0
     has_pro_usage = g_bd["pro_total"] > 0
     if has_pro_usage:
@@ -1947,6 +2119,8 @@ def generate_html_report(sessions, pricing, output_path=None):
         "has_pro_usage": has_pro_usage,
         "has_fsub_usage": has_fsub_usage,
         "has_hyd_usage": has_hyd_usage,
+        "has_opus_usage": has_opus_usage,
+        "has_sonnet_usage": has_sonnet_usage,
         "ws_labels": chart_ws_labels,
         "ws_tokens": chart_ws_tokens,
         "ws_meta": chart_ws_meta,
@@ -1964,11 +2138,15 @@ def generate_html_report(sessions, pricing, output_path=None):
     p_cfg = models_cfg.get("gemini_pro", {})
     a_cfg = models_cfg.get("gemini_argon", {})
     h_cfg = models_cfg.get("gemini_hydrogen", {})
+    o_cfg = models_cfg.get("claude_opus", {})
+    s_cfg = models_cfg.get("claude_sonnet", {})
 
     f_in, f_out, f_cac = f_cfg.get("cost_per_million_input_usd", 0.75), f_cfg.get("cost_per_million_output_usd", 3.75), f_cfg.get("cost_per_million_cached_usd", 0.075)
     p_in, p_out, p_cac = p_cfg.get("cost_per_million_input_usd", 1.25), p_cfg.get("cost_per_million_output_usd", 5.00), p_cfg.get("cost_per_million_cached_usd", 0.3125)
     a_in, a_out, a_cac = a_cfg.get("cost_per_million_input_usd", 2.00), a_cfg.get("cost_per_million_output_usd", 10.00), a_cfg.get("cost_per_million_cached_usd", 0.10)
     h_in, h_out, h_cac = h_cfg.get("cost_per_million_input_usd", 1.50), h_cfg.get("cost_per_million_output_usd", 7.50), h_cfg.get("cost_per_million_cached_usd", 0.075)
+    o_in, o_out, o_cac = o_cfg.get("cost_per_million_input_usd", 4.00), o_cfg.get("cost_per_million_output_usd", 20.00), o_cfg.get("cost_per_million_cached_usd", 0.20)
+    s_in, s_out, s_cac = s_cfg.get("cost_per_million_input_usd", 2.00), s_cfg.get("cost_per_million_output_usd", 10.00), s_cfg.get("cost_per_million_cached_usd", 0.10)
 
     real_mult = (g_bd["real_roi_pct"] / 100.0) if g_bd["real_roi_pct"] else 0.0
     real_savings = g_bd.get("real_savings_eur", g_bd["real_eur"] - total_sub_eur)
@@ -2037,6 +2215,8 @@ def generate_html_report(sessions, pricing, output_path=None):
         .badge-argon {{ background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.35); }}
         .badge-hydrogen {{ background: rgba(251, 191, 36, 0.15); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.35); }}
         .badge-subflash {{ background: rgba(45, 212, 191, 0.14); color: #2dd4bf; border: 1px solid rgba(45, 212, 191, 0.35); }}
+        .badge-opus {{ background: rgba(251, 113, 133, 0.16); color: #fb7185; border: 1px solid rgba(251, 113, 133, 0.38); }}
+        .badge-sonnet {{ background: rgba(232, 121, 249, 0.16); color: #e879f9; border: 1px solid rgba(232, 121, 249, 0.38); }}
         
         /* Grid de Métricas Smartwatch / Fitness (8 tarjetas en 2 filas equilibradas de 4) */
         .fitness-grid {{
@@ -2389,6 +2569,16 @@ def generate_html_report(sessions, pricing, output_path=None):
             color: #fbbf24;
             border-color: rgba(251, 191, 36, 0.35);
         }}
+        .pricing-model-badge.opus {{
+            background: rgba(251, 113, 133, 0.16);
+            color: #fb7185;
+            border-color: rgba(251, 113, 133, 0.38);
+        }}
+        .pricing-model-badge.sonnet {{
+            background: rgba(232, 121, 249, 0.16);
+            color: #e879f9;
+            border-color: rgba(232, 121, 249, 0.38);
+        }}
         .pricing-row {{
             display: flex;
             justify-content: space-between;
@@ -2424,7 +2614,7 @@ def generate_html_report(sessions, pricing, output_path=None):
         <header>
             <div>
                 <h1>📊 Google AI Pro - Hub de Rendimiento y Analítica</h1>
-                <p class="subtitle">Histórico diario, semanal y mensual · Gemini 3.8 Flash, Gemini Pro, Gemini 4 Argon y Gemini 4 Hydrogen</p>
+                <p class="subtitle">Histórico diario, semanal y mensual · Gemini 3.8 Flash, Gemini Pro, Gemini 4 Argon/Hydrogen, Claude Opus y Sonnet</p>
             </div>
             <div>
                 <span class="badge badge-success">Suscripción: {sub_eur:.2f} €/mes · {meses_label} ({total_sub_eur:.2f} € acum.)</span>
@@ -2785,9 +2975,49 @@ def generate_html_report(sessions, pricing, output_path=None):
                         <span class="pricing-val" style="color: #c084fc; font-weight: bold;">{a_cac:.2f} $ <small style="color:#c084fc;">(~{a_cac*rate_eur:.3f} €) / 1M</small> <span style="font-size:10px; color:var(--text-muted);">(0.20 $ desde 1 Dic)</span></span>
                     </div>
                 </div>
+
+                <!-- Claude Opus -->
+                <div class="pricing-box">
+                    <div class="pricing-box-header">
+                        <h4>🟠 Claude Opus (4.6 / 5.5)</h4>
+                        <span class="pricing-model-badge opus">Anthropic API · Thinking / High</span>
+                    </div>
+                    <div class="pricing-row">
+                        <span class="pricing-label">📥 Entrada (Prompt / Contexto nuevo):</span>
+                        <span class="pricing-val">{o_in:.2f} $ <small style="color:var(--text-muted);">(~{o_in*rate_eur:.2f} €) / 1M</small></span>
+                    </div>
+                    <div class="pricing-row">
+                        <span class="pricing-label">📤 Salida (Respuestas / Código):</span>
+                        <span class="pricing-val">{o_out:.2f} $ <small style="color:var(--text-muted);">(~{o_out*rate_eur:.2f} €) / 1M</small></span>
+                    </div>
+                    <div class="pricing-row" style="background: rgba(251, 113, 133, 0.09); padding: 5px 8px; border-radius: 6px;">
+                        <span class="pricing-label" style="color: #fb7185; font-weight: 600;">⚡ Prompt Caching Hit (-95%):</span>
+                        <span class="pricing-val" style="color: #fb7185; font-weight: bold;">{o_cac:.2f} $ <small style="color:#fb7185;">(~{o_cac*rate_eur:.3f} €) / 1M</small></span>
+                    </div>
+                </div>
+
+                <!-- Claude Sonnet -->
+                <div class="pricing-box">
+                    <div class="pricing-box-header">
+                        <h4>🟣 Claude Sonnet (4.6 / 5.5)</h4>
+                        <span class="pricing-model-badge sonnet">Anthropic API · Thinking / High</span>
+                    </div>
+                    <div class="pricing-row">
+                        <span class="pricing-label">📥 Entrada (Prompt / Contexto nuevo):</span>
+                        <span class="pricing-val">{s_in:.2f} $ <small style="color:var(--text-muted);">(~{s_in*rate_eur:.2f} €) / 1M</small></span>
+                    </div>
+                    <div class="pricing-row">
+                        <span class="pricing-label">📤 Salida (Respuestas / Código):</span>
+                        <span class="pricing-val">{s_out:.2f} $ <small style="color:var(--text-muted);">(~{s_out*rate_eur:.2f} €) / 1M</small></span>
+                    </div>
+                    <div class="pricing-row" style="background: rgba(232, 121, 249, 0.09); padding: 5px 8px; border-radius: 6px;">
+                        <span class="pricing-label" style="color: #e879f9; font-weight: 600;">⚡ Prompt Caching Hit (-95%):</span>
+                        <span class="pricing-val" style="color: #e879f9; font-weight: bold;">{s_cac:.2f} $ <small style="color:#e879f9;">(~{s_cac*rate_eur:.3f} €) / 1M</small></span>
+                    </div>
+                </div>
             </div>
             <div style="margin-top: 14px; font-size: 11px; color: var(--text-muted); line-height: 1.6; border-top: 1px solid rgba(255, 255, 255, 0.06); padding-top: 10px;">
-                💡 <strong>Notas de Modelos Gemini 4:</strong> <strong>Gemini 4 Hydrogen</strong> (lanzado el 12 de noviembre de 2026) se factura a <strong>$1.50 entrada / $7.50 salida</strong> (incluyendo tokens de pensamiento/razonamiento) con <strong>caché implícito ultrabajo de $0.075 / 1M (-95%)</strong>. <strong>Gemini 4 Argon</strong> (hasta el 30 de noviembre de 2026) se factura a <strong>$2.00 entrada / $10.00 salida / $0.10 caché</strong> (subirá a $4.00 / $20.00 / $0.20 el 1 de diciembre). Se mantienen también todas las métricas históricas de <strong>Gemini 3.8 Flash</strong> y <strong>Gemini Pro</strong>.
+                💡 <strong>Notas de Modelos Gemini 4 y Claude:</strong> <strong>Gemini 4 Hydrogen</strong> (lanzado el 12 de noviembre de 2026) se factura a <strong>$1.50 entrada / $7.50 salida</strong> (incluyendo tokens de pensamiento/razonamiento) con <strong>caché implícito ultrabajo de $0.075 / 1M (-95%)</strong>. <strong>Gemini 4 Argon</strong> (hasta el 30 de noviembre de 2026) se factura a <strong>$2.00 entrada / $10.00 salida / $0.10 caché</strong> (subirá a $4.00 / $20.00 / $0.20 el 1 de diciembre). <strong>Claude Opus</strong> (enums 1026/1402) y <strong>Claude Sonnet</strong> (enums 1035/1405) aplican tarifas API Anthropic 2026 ($4/$20/$0.20 Opus 5.5 y $2/$10/$0.10 Sonnet 5.5). Se mantienen también todas las métricas históricas de <strong>Gemini 3.8 Flash</strong> y <strong>Gemini Pro</strong>.
             </div>
         </div>
 
@@ -2831,6 +3061,14 @@ def generate_html_report(sessions, pricing, output_path=None):
                 hyd_new: slice.map(w => w.hyd_new || 0),
                 hydrogen_tokens: slice.map(w => w.hydrogen_tokens || 0),
                 hydrogen_costs: slice.map(w => w.hydrogen_costs || 0),
+                opus_cache: slice.map(w => w.opus_cache || 0),
+                opus_new: slice.map(w => w.opus_new || 0),
+                opus_tokens: slice.map(w => w.opus_tokens || 0),
+                opus_costs: slice.map(w => w.opus_costs || 0),
+                sonnet_cache: slice.map(w => w.sonnet_cache || 0),
+                sonnet_new: slice.map(w => w.sonnet_new || 0),
+                sonnet_tokens: slice.map(w => w.sonnet_tokens || 0),
+                sonnet_costs: slice.map(w => w.sonnet_costs || 0),
                 pro_tokens: slice.map(w => w.pro_tokens || 0),
                 pro_costs: slice.map(w => w.pro_costs || 0),
                 rangeText: slice[0].key + ' - ' + slice[slice.length - 1].key,
@@ -2922,6 +3160,30 @@ def generate_html_report(sessions, pricing, output_path=None):
                 }});
             }}
 
+            if (chartDataPayload.has_opus_usage) {{
+                datasets.push({{
+                    label: '🟠 Claude Opus (M)',
+                    data: src.opus_tokens || [],
+                    type: 'bar',
+                    backgroundColor: 'rgba(251, 113, 133, 0.82)',
+                    borderColor: '#fb7185',
+                    borderWidth: 1,
+                    stack: 'tokens'
+                }});
+            }}
+
+            if (chartDataPayload.has_sonnet_usage) {{
+                datasets.push({{
+                    label: '🟣 Claude Sonnet (M)',
+                    data: src.sonnet_tokens || [],
+                    type: 'bar',
+                    backgroundColor: 'rgba(232, 121, 249, 0.82)',
+                    borderColor: '#e879f9',
+                    borderWidth: 1,
+                    stack: 'tokens'
+                }});
+            }}
+
             datasets.push({{
                 label: 'Valor 3.x Flash (€)',
                 data: src.costs,
@@ -2997,6 +3259,38 @@ def generate_html_report(sessions, pricing, output_path=None):
                 }});
             }}
 
+            if (chartDataPayload.has_opus_usage) {{
+                datasets.push({{
+                    label: 'Coste Opus (€)',
+                    data: src.opus_costs || [],
+                    type: 'line',
+                    borderColor: '#fda4af',
+                    borderDash: [3, 3],
+                    backgroundColor: 'transparent',
+                    borderWidth: 2,
+                    pointBackgroundColor: '#fda4af',
+                    pointRadius: 2.5,
+                    yAxisID: 'yCost',
+                    tension: 0.25
+                }});
+            }}
+
+            if (chartDataPayload.has_sonnet_usage) {{
+                datasets.push({{
+                    label: 'Coste Sonnet (€)',
+                    data: src.sonnet_costs || [],
+                    type: 'line',
+                    borderColor: '#f0abfc',
+                    borderDash: [4, 3],
+                    backgroundColor: 'transparent',
+                    borderWidth: 2,
+                    pointBackgroundColor: '#f0abfc',
+                    pointRadius: 2.5,
+                    yAxisID: 'yCost',
+                    tension: 0.25
+                }});
+            }}
+
             return datasets;
         }}
 
@@ -3050,6 +3344,8 @@ def generate_html_report(sessions, pricing, output_path=None):
                 const argonTokenPoints = sData.map(d => d.argon_tokens || 0);
                 const hydTokenPoints = sData.map(d => d.hydrogen_tokens || 0);
                 const proTokenPoints = sData.map(d => d.pro_tokens || 0);
+                const opusTokenPoints = sData.map(d => d.opus_tokens || 0);
+                const sonnetTokenPoints = sData.map(d => d.sonnet_tokens || 0);
                 const realCostPoints = sData.map(d => d.real_cost ?? d.cost ?? 0);
 
                 const scatterDatasets = [
@@ -3146,6 +3442,46 @@ def generate_html_report(sessions, pricing, output_path=None):
                     }});
                 }}
 
+                if (chartDataPayload.has_opus_usage) {{
+                    scatterDatasets.push({{
+                        label: '🟠 Claude Opus (M)',
+                        data: opusTokenPoints,
+                        borderColor: '#fb7185',
+                        backgroundColor: 'transparent',
+                        borderWidth: 2.1,
+                        fill: false,
+                        cubicInterpolationMode: 'monotone',
+                        tension: 0.34,
+                        pointRadius: 0,
+                        pointHoverRadius: 5,
+                        pointHitRadius: 12,
+                        pointBackgroundColor: '#fb7185',
+                        pointBorderColor: '#0b1120',
+                        pointBorderWidth: 2,
+                        yAxisID: 'y'
+                    }});
+                }}
+
+                if (chartDataPayload.has_sonnet_usage) {{
+                    scatterDatasets.push({{
+                        label: '🟣 Claude Sonnet (M)',
+                        data: sonnetTokenPoints,
+                        borderColor: '#e879f9',
+                        backgroundColor: 'transparent',
+                        borderWidth: 2.1,
+                        fill: false,
+                        cubicInterpolationMode: 'monotone',
+                        tension: 0.34,
+                        pointRadius: 0,
+                        pointHoverRadius: 5,
+                        pointHitRadius: 12,
+                        pointBackgroundColor: '#e879f9',
+                        pointBorderColor: '#0b1120',
+                        pointBorderWidth: 2,
+                        yAxisID: 'y'
+                    }});
+                }}
+
                 scatterDatasets.push({{
                     label: '💎 Valor API Real Mix (€)',
                     data: realCostPoints,
@@ -3166,7 +3502,7 @@ def generate_html_report(sessions, pricing, output_path=None):
                     yAxisID: 'yCost'
                 }});
 
-                const maxModelTokens = Math.max(...flashTokenPoints, ...fsubTokenPoints, ...hydTokenPoints, ...argonTokenPoints, ...proTokenPoints, 20);
+                const maxModelTokens = Math.max(...flashTokenPoints, ...fsubTokenPoints, ...hydTokenPoints, ...argonTokenPoints, ...proTokenPoints, ...opusTokenPoints, ...sonnetTokenPoints, 20);
                 const maxRealCost = Math.max(...realCostPoints, 10);
 
                 timelineChartInstance = new Chart(ctx, {{
@@ -3289,6 +3625,12 @@ def generate_html_report(sessions, pricing, output_path=None):
                                         if ((d.pro_tokens || 0) > 0) {{
                                             lines.push('  ↳ 🧠 Pro: ' + d.pro_tokens + ' M (~' + d.pro_cost + ' €)');
                                         }}
+                                        if ((d.opus_tokens || 0) > 0) {{
+                                            lines.push('  ↳ 🟠 Claude Opus: ' + d.opus_tokens + ' M (Caché: ' + (d.opus_cache || 0) + ' M | Nuevos: ' + (d.opus_new || 0) + ' M · ~' + (d.opus_cost || 0) + ' €)');
+                                        }}
+                                        if ((d.sonnet_tokens || 0) > 0) {{
+                                            lines.push('  ↳ 🟣 Claude Sonnet: ' + d.sonnet_tokens + ' M (Caché: ' + (d.sonnet_cache || 0) + ' M | Nuevos: ' + (d.sonnet_new || 0) + ' M · ~' + (d.sonnet_cost || 0) + ' €)');
+                                        }}
                                         return lines;
                                     }}
                                 }}
@@ -3349,7 +3691,7 @@ def generate_html_report(sessions, pricing, output_path=None):
                                 stepSize: 10,
                                 callback: v => v + ' €'
                             }},
-                            suggestedMax: Math.max(...(pData.costs || [50]), ...(pData.fsub_costs || [0]), ...(pData.argon_costs || [0]), ...(pData.hydrogen_costs || [0]), ...(pData.pro_costs || [0]), 50) * 1.5,
+                            suggestedMax: Math.max(...(pData.costs || [50]), ...(pData.fsub_costs || [0]), ...(pData.argon_costs || [0]), ...(pData.hydrogen_costs || [0]), ...(pData.pro_costs || [0]), ...(pData.opus_costs || [0]), ...(pData.sonnet_costs || [0]), 50) * 1.5,
                             min: 0
                         }}
                     }},
