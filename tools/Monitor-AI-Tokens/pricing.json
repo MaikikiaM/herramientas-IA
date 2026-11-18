@@ -34,6 +34,13 @@
       "cost_per_million_cached_usd": 0.075,
       "pricing_notes": "$1.50 in / $7.50 out / $0.075 cache implícito (-95% vs entrada) · Lanzamiento Nov 2026"
     },
+    "gemini_neon": {
+      "display_name": "Gemini 4 Neon (Razonamiento avanzado / XHigh)",
+      "cost_per_million_input_usd": 3.00,
+      "cost_per_million_output_usd": 15.00,
+      "cost_per_million_cached_usd": 0.15,
+      "pricing_notes": "$3.00 in / $15.00 out / $0.15 caché implícito (-95% vs entrada) · Lanzamiento 18 Nov 2026"
+    },
     "claude_opus": {
       "display_name": "Claude Opus (4.6 / 5.5)",
       "cost_per_million_input_usd": 4.00,

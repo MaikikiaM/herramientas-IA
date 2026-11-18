@@ -116,3 +116,22 @@ SESIÓN: 17/11/2026 (Noche) - SOPORTE PARA CLAUDE OPUS Y CLAUDE SONNET EN MONITO
   - `python tools/Monitor-AI-Tokens/monitor.py --all --html --no-open --no-color` y `--month --no-color`: OK (`0`), contabilizando `100.77 M` (`60.80 €`, 5 sesiones desde 06/08/2026) en Claude Opus y `15.22 M` (`4.38 €`, 2 sesiones desde 13/08/2026) en Claude Sonnet dentro del Mix Real (`654.83 €` total).
   - Validación de payload HTML/JSON y `node --check` sobre el `<script>` embebido de `reporte_consumo.html` (`verify_html_claude.py`): `ALL HTML/JSON/JS CHECKS PASSED` (sin `NaN`, exit code `0`).
 ================================================================================
+
+================================================================================
+SESIÓN: 18/11/2026 - SOPORTE EN VIVO PARA GEMINI 4 NEON Y CORRECCIÓN DE ENUMS 1527/1530/1535
+================================================================================
+- Prompts literales del usuario:
+  * [18/11/2026 23:39]: "Hay un nuevo modelo a registrar: Gemini 4 Neon"
+
+- Cambios implementados:
+  - `tools/Monitor-AI-Tokens/pricing.json`: Añadido `gemini_neon` con tarifa oficial Google AI Studio / Vertex AI del 18/11/2026 (`$3.00` entrada / `$15.00` salida / `$0.15` caché `-95%`).
+  - `tools/Monitor-AI-Tokens/monitor.py`:
+    * Actualizado `PROTOBUF_MODEL_ENUM_MAP` con tres enums verificados en `~/.gemini/antigravity/conversations/*.db`: `1535` → `neon` (`Gemini 4 Neon XHigh`, verificado en `64a721a0`), `1527` → `hydrogen` (`Gemini 4 Hydrogen Low`, verificado en `4c1efe02` y `d4a5a46e`) y `1530` → `flash_sub` (`Browser Subagent v2`, verificado en `3be56f36`).
+    * Mejorado `load_conversation_exec_models()` para leer también `steps.metadata` (campo `11`) en pasos vivos posteriores al último `executor_metadata`, detectando cambios a Neon incluso a mitad de turno.
+    * Integrado `neon` en `scan_antigravity_usage()`, `calculate_costs()`, `calculate_bucket_breakdown()`, `compute_analytics()` (incluyendo `numeric_fields` diarios/semanales/mensuales), bloque CLI dedicado, badges CSS (`.badge-neon` `#a3e635`), tarjeta de tarifas HTML, reparto porcentual, barras apiladas (`Caché Neon` + `Nuevos Neon` + `Coste Neon €`) y curva suavizada en `Histórico Diario Completo`.
+
+- Verificación:
+  - `python -m py_compile tools/Monitor-AI-Tokens/monitor.py`: OK (`0`).
+  - `python tools/Monitor-AI-Tokens/monitor.py --all --html --no-open --no-color` y `--month --no-color`: OK (`0`), detectando en vivo el uso inicial de **Gemini 4 Neon** en `2026-W47` (`2.96 M` tokens · `2.48 M` caché / `484.7 k` nuevos · `2.13 €`) dentro del Mix Real (`684.42 €`).
+  - `verify_html_neon.py` (HTML, payload JSON y `node --check` sobre JS embebido): `ALL NEON HTML/JSON/JS CHECKS PASSED` (exit code `0`, sin `NaN`).
+================================================================================

@@ -1,6 +1,6 @@
 # ESTADO DEL PROYECTO: Herramientas-IA
 
-**Última actualización:** 17/11/2026
+**Última actualización:** 18/11/2026
 **Responsable:** MaikikiaM / Antigravity AI
 
 ## 1. Misión y Alcance
@@ -9,7 +9,7 @@ Repositorio central de herramientas, habilidades globales, scripts de seguridad,
 ## 2. Arquitectura y Componentes
 - `global/`: Protocolo maestro `AGENTS.md`, configuración `hooks.json`, scripts de seguridad (`guardia-rutas.ps1`, `autosave.ps1`) y catálogo de 8 habilidades (`skills/`).
 - `tools/`:
-  - `Monitor-AI-Tokens/`: Monitor de consumo de tokens y costes de IA en tiempo real con dashboard HTML (Flash 3.x, Subagentes Flash, Pro, Argon, Hydrogen, Claude Opus y Claude Sonnet; detección por protobuf `executor_metadata`, desglose Caché/Nuevos y ROI proporcional al nº de meses).
+  - `Monitor-AI-Tokens/`: Monitor de consumo de tokens y costes de IA en tiempo real con dashboard HTML (Flash 3.x, Subagentes Flash, Pro, Argon, Hydrogen, Neon, Claude Opus y Claude Sonnet; detección en vivo por protobuf `executor_metadata` + `steps.metadata`, desglose Caché/Nuevos y ROI proporcional al nº de meses).
   - `md-a-pdf/`: Motor de compilación headless Markdown a PDF.
   - `visor-3d-html/`: Generador de visores 3D Three.js táctiles para Android.
   - `precios-ia/`: Calculadoras de precios de modelos Gemini y consumo.
