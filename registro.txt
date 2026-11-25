@@ -135,3 +135,21 @@ SESIÓN: 18/11/2026 - SOPORTE EN VIVO PARA GEMINI 4 NEON Y CORRECCIÓN DE ENUMS 
   - `python tools/Monitor-AI-Tokens/monitor.py --all --html --no-open --no-color` y `--month --no-color`: OK (`0`), detectando en vivo el uso inicial de **Gemini 4 Neon** en `2026-W47` (`2.96 M` tokens · `2.48 M` caché / `484.7 k` nuevos · `2.13 €`) dentro del Mix Real (`684.42 €`).
   - `verify_html_neon.py` (HTML, payload JSON y `node --check` sobre JS embebido): `ALL NEON HTML/JSON/JS CHECKS PASSED` (exit code `0`, sin `NaN`).
 ================================================================================
+
+================================================================================
+SESIÓN: 25/11/2026 - SOPORTE PARA GEMINI 4 CARBON Y ENUMS 1404/1418/1427/1532
+================================================================================
+- Prompts literales del usuario:
+  * [25/11/2026 01:37]: "han metido un nuevo modelo: gemini 4 carbon"
+
+- Cambios implementados:
+  - `tools/Monitor-AI-Tokens/pricing.json`: Añadido `gemini_carbon` con tarifa oficial Google AI Studio / Vertex AI (`$2.00` entrada / `$10.00` salida / `$0.10` caché implícito `-95%` hasta el 30/11/2026; `$4.00 / $20.00 / $0.20` desde el 01/12/2026).
+  - `tools/Monitor-AI-Tokens/monitor.py`:
+    * Actualizado `PROTOBUF_MODEL_ENUM_MAP` con `1427` → `carbon` (`Gemini 4 Carbon High`, verificado en `34342c68`) y los enums adicionales detectados en trazas recientes: `1532` → `neon` (`Gemini 4 Neon High`, `46954104`/`cd0c74d5`), `1418` → `argon` (`Gemini 4 Argon Medium`, `4d067d7d`) y `1404` → `sonnet` (`Claude Sonnet 5.5 Medium`, `4d067d7d`).
+    * Integrado `carbon` en `scan_antigravity_usage()` (`<USER_SETTINGS_CHANGE>`, herencia y `gen4_used`), `calculate_costs()`, `calculate_bucket_breakdown()`, `compute_analytics()`, bloque CLI `💎 GEMINI 4 CARBON`, badges (`.badge-carbon` `#e2e8f0`), tarjeta de tarifas HTML, `🤖 Reparto por Modelo`, barras apiladas (`Caché Carbon` + `Nuevos Carbon` + `Coste Carbon €`) y curva suavizada en `Histórico Diario Completo`.
+
+- Verificación:
+  - `python -m py_compile tools/Monitor-AI-Tokens/monitor.py`: OK (`0`).
+  - `monitor.py --all --html --no-open --no-color` y `--month --no-color`: OK (`0`), detectando `14.81 M` tokens (`12.74 M` caché / `2.07 M` nuevos · `5.77 €` en 2 conversaciones) de **Gemini 4 Carbon** en `2026-W48`, más `52.24 M` (`26.05 €`) de **Gemini 4 Neon** dentro del Mix Real (`814.19 €`).
+  - `verify_html_carbon.py` (HTML, `chartDataPayload` JSON y `node --check` sobre el `<script>` embebido de `reporte_consumo.html`): `ALL CARBON HTML/JSON/JS CHECKS PASSED` (sin `NaN`, exit code `0`).
+================================================================================

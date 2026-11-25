@@ -41,6 +41,13 @@
       "cost_per_million_cached_usd": 0.15,
       "pricing_notes": "$3.00 in / $15.00 out / $0.15 caché implícito (-95% vs entrada) · Lanzamiento 18 Nov 2026"
     },
+    "gemini_carbon": {
+      "display_name": "Gemini 4 Carbon (Modelo Frontier / Código complejo)",
+      "cost_per_million_input_usd": 2.00,
+      "cost_per_million_output_usd": 10.00,
+      "cost_per_million_cached_usd": 0.10,
+      "pricing_notes": "$2.00 in / $10.00 out / $0.10 caché (-95%) hasta 30 Nov 2026; $4.00 in / $20.00 out / $0.20 caché desde 1 Dic 2026"
+    },
     "claude_opus": {
       "display_name": "Claude Opus (4.6 / 5.5)",
       "cost_per_million_input_usd": 4.00,
