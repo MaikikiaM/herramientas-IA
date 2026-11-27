@@ -153,3 +153,26 @@ SESIÓN: 25/11/2026 - SOPORTE PARA GEMINI 4 CARBON Y ENUMS 1404/1418/1427/1532
   - `monitor.py --all --html --no-open --no-color` y `--month --no-color`: OK (`0`), detectando `14.81 M` tokens (`12.74 M` caché / `2.07 M` nuevos · `5.77 €` en 2 conversaciones) de **Gemini 4 Carbon** en `2026-W48`, más `52.24 M` (`26.05 €`) de **Gemini 4 Neon** dentro del Mix Real (`814.19 €`).
   - `verify_html_carbon.py` (HTML, `chartDataPayload` JSON y `node --check` sobre el `<script>` embebido de `reporte_consumo.html`): `ALL CARBON HTML/JSON/JS CHECKS PASSED` (sin `NaN`, exit code `0`).
 ================================================================================
+
+================================================================================
+SESIÓN: 27/11/2026 - TELEMETRÍA PROTOBUF EXACTA PRE-OCTUBRE Y AUDITORÍA DE OPUS
+================================================================================
+- Prompts literales del usuario:
+  * [25/11/2026 01:43]: "estas seguro de que solo son esos tokens de carbon o que son asi de baratos? se han comido mas de 1/3 de mi sesion semanal en 2 dias "
+  * [27/11/2026 18:01]: "dudo muchisimo que haya usado 100 millones de tokens de opus teniendo un uso tan limitado en la aplicacion"
+
+- Hallazgo raíz verificado:
+  - El 88% de los `102.07 M` atribuidos anteriormente a **Claude Opus** (`90.02 M` de una única sesión de agosto, `9ad7d95d`) procedía del estimador sintético pre-8-oct (`min(10000 + s_idx * 750, 140000)` por cada `PLANNER_RESPONSE`), ya que `transcript.jsonl` no exportaba conteos nativos antes del 08/10/2026.
+  - Auditoría sobre `~/.gemini/antigravity/conversations/*.db` confirmó que **50 de 50** sesiones previas al 08/10 contienen telemetría protobuf exacta por paso en `steps.metadata` (campo `9`: modelo + `input_tokens` + `output_tokens` + `cache_read_tokens`), dando `23.78 M` reales para `9ad7d95d` en lugar de `90.02 M`.
+  - Adicionalmente, `e42984c2` había quedado marcada como sesión Opus con `0` tokens por cambiar el selector al final sin ejecutar ninguna llamada real al LLM.
+
+- Cambios implementados (`tools/Monitor-AI-Tokens/monitor.py`):
+  - Sustituida `load_conversation_exec_models()` por `load_conversation_telemetry()` (manteniendo wrapper de compatibilidad), extrayendo simultáneamente `executor_metadata` y el consumo real paso a paso desde `steps.metadata` (campo `9`) en una sola lectura SQLite.
+  - Priorizada la telemetría protobuf DB sobre la reconstrucción sintética (`db_step_usage[s_idx_entry]` deduplicado por `step_index`, evitando además doble conteo de forks y descartando sesiones con `0` tokens al marcar `has_<modelo>`).
+  - Etiqueta mensual histórica actualizada de `Reconstruido (97%)` a `Telemetría Protobuf DB` para `2026-08` y `2026-09`.
+
+- Verificación:
+  - `python -m py_compile tools/Monitor-AI-Tokens/monitor.py`: OK (`0`).
+  - `monitor.py --all --html --no-open --no-color` y `--month --no-color`: OK (`0`). **Claude Opus** se corrige de `102.07 M` (`63.69 €`, `7` ses.) a **`36.15 M`** (`21.73 €`, `6` ses., `90.7%` caché); **Claude Sonnet** refleja `27.17 M` (`6.37 €`, `4` ses.); Mix Real acumulado `833.44 €`.
+  - `verify_html_carbon.py` (`chartDataPayload` + `node --check`): `ALL CARBON HTML/JSON/JS CHECKS PASSED` (exit code `0`, sin `NaN`).
+================================================================================

@@ -377,12 +377,13 @@ def _extract_exec_step_model(data_bytes):
                             model_id = v3
     return end_step, model_id
 
-def load_conversation_exec_models(conv_id):
-    """Lee los pares ordenados (end_step_idx, tier_modelo) desde conversations/<cid>.db."""
+def load_conversation_telemetry(conv_id):
+    """Lee de conversations/<cid>.db los rangos (end_step, tier) y el consumo exacto por step (campo pb 9)."""
     db_path = os.path.expanduser(f'~/.gemini/antigravity/conversations/{conv_id}.db')
     if not os.path.exists(db_path):
-        return []
+        return [], {}
     ranges = []
+    step_usage = {}
     conn = None
     try:
         conn = sqlite3.connect(db_path, timeout=2.0)
@@ -395,30 +396,44 @@ def load_conversation_exec_models(conv_id):
                 if tier:
                     ranges.append((end_step, tier))
         ranges.sort(key=lambda x: x[0])
-        # Leer también pasos en vivo más recientes que executor_metadata desde steps.metadata (campo 11)
         max_exec_end = ranges[-1][0] if ranges else -1
+
         for s_idx, md_bytes in conn.execute(
-            'SELECT idx, metadata FROM steps WHERE idx > ? AND metadata IS NOT NULL ORDER BY idx',
-            (max_exec_end,)
+            'SELECT idx, metadata FROM steps WHERE metadata IS NOT NULL ORDER BY idx'
         ):
             m_id = None
+            f9_dict = None
             for fno, wt, val in _parse_pb_fields(md_bytes):
                 if fno == 11 and wt == 0:
                     m_id = val
-                    break
-            if m_id is not None:
-                tier = PROTOBUF_MODEL_ENUM_MAP.get(m_id)
-                if tier:
-                    ranges.append((s_idx, tier))
+                elif fno == 9 and wt == 2:
+                    f9_dict = {a: v for a, w, v in _parse_pb_fields(val) if w == 0}
+
+            eff_mid = (f9_dict.get(1) if f9_dict else None) or m_id
+            tier = PROTOBUF_MODEL_ENUM_MAP.get(eff_mid) if eff_mid is not None else None
+            if s_idx > max_exec_end and tier:
+                ranges.append((s_idx, tier))
+
+            if f9_dict:
+                in_t = f9_dict.get(2, 0)
+                out_t = f9_dict.get(3, 0)
+                cac_t = f9_dict.get(5, 0)
+                if in_t or out_t or cac_t:
+                    step_usage[s_idx] = (tier, in_t, out_t, cac_t)
         ranges.sort(key=lambda x: x[0])
     except Exception:
-        return []
+        return [], {}
     finally:
         if conn is not None:
             try:
                 conn.close()
             except Exception:
                 pass
+    return ranges, step_usage
+
+def load_conversation_exec_models(conv_id):
+    """Compatibilidad: devuelve solo los pares ordenados (end_step_idx, tier_modelo)."""
+    ranges, _ = load_conversation_telemetry(conv_id)
     return ranges
 
 def scan_antigravity_usage(brain_dir=None):
@@ -509,8 +524,9 @@ def scan_antigravity_usage(brain_dir=None):
             "model_timeline": []
         }
 
-        exec_ranges = load_conversation_exec_models(conv_id)
+        exec_ranges, db_step_usage = load_conversation_telemetry(conv_id)
         session_data["has_exec_models"] = bool(exec_ranges)
+        used_db_steps = set()
         conv_agent = db_metadata.get(conv_id, {}).get("agent_name", "").lower()
 
         def resolve_step_model(s_idx, fallback_model, last_settings_step):
@@ -614,47 +630,52 @@ def scan_antigravity_usage(brain_dir=None):
                             text_corpus.append(args_str[:500])
 
                     step_model = resolve_step_model(s_idx_entry, current_model, last_settings_step)
-                    if step_model == "argon":
-                        session_data["has_argon"] = True
-                        if dt and (not session_data["first_argon_dt"] or dt < session_data["first_argon_dt"]):
-                            session_data["first_argon_dt"] = dt
-                    elif step_model == "hydrogen":
-                        session_data["has_hydrogen"] = True
-                        if dt and (not session_data["first_hydrogen_dt"] or dt < session_data["first_hydrogen_dt"]):
-                            session_data["first_hydrogen_dt"] = dt
-                    elif step_model == "neon":
-                        session_data["has_neon"] = True
-                        if dt and (not session_data["first_neon_dt"] or dt < session_data["first_neon_dt"]):
-                            session_data["first_neon_dt"] = dt
-                    elif step_model == "carbon":
-                        session_data["has_carbon"] = True
-                        if dt and (not session_data["first_carbon_dt"] or dt < session_data["first_carbon_dt"]):
-                            session_data["first_carbon_dt"] = dt
-                    elif step_model == "pro":
-                        session_data["has_pro"] = True
-                    elif step_model == "flash_sub":
-                        session_data["has_flash_sub"] = True
-                    elif step_model == "opus":
-                        session_data["has_opus"] = True
-                    elif step_model == "sonnet":
-                        session_data["has_sonnet"] = True
 
-                    # Extraer tokens
+                    # Extraer tokens (prioridad: telemetría nativa JSONL -> protobuf steps.metadata f9 -> estimador fallback)
                     in_tok = entry.get('input_tokens') or 0
                     out_tok = entry.get('output_tokens') or 0
                     cache_tok = entry.get('cache_read_tokens') or 0
                     is_estimated = False
 
-                    # Reconstrucción calibrada para pasos previos al 8 de octubre (precisión verificada: 97.2%)
-                    if not (in_tok or out_tok or cache_tok) and entry.get('type') == 'PLANNER_RESPONSE':
-                        s_idx = entry.get('step_index', 0)
-                        tot_est = min(10000 + s_idx * 750, 140000)
-                        cache_tok = int(tot_est * 0.935)
-                        out_tok = int(tot_est * 0.012)
-                        in_tok = tot_est - cache_tok - out_tok
-                        is_estimated = True
+                    if not (in_tok or out_tok or cache_tok):
+                        if s_idx_entry in db_step_usage and s_idx_entry not in used_db_steps:
+                            db_tier, in_tok, out_tok, cache_tok = db_step_usage[s_idx_entry]
+                            used_db_steps.add(s_idx_entry)
+                            if db_tier:
+                                step_model = db_tier
+                        elif not db_step_usage and entry.get('type') == 'PLANNER_RESPONSE':
+                            s_idx = entry.get('step_index', 0)
+                            tot_est = min(10000 + s_idx * 750, 140000)
+                            cache_tok = int(tot_est * 0.935)
+                            out_tok = int(tot_est * 0.012)
+                            in_tok = tot_est - cache_tok - out_tok
+                            is_estimated = True
 
                     if in_tok or out_tok or cache_tok:
+                        if step_model == "argon":
+                            session_data["has_argon"] = True
+                            if dt and (not session_data["first_argon_dt"] or dt < session_data["first_argon_dt"]):
+                                session_data["first_argon_dt"] = dt
+                        elif step_model == "hydrogen":
+                            session_data["has_hydrogen"] = True
+                            if dt and (not session_data["first_hydrogen_dt"] or dt < session_data["first_hydrogen_dt"]):
+                                session_data["first_hydrogen_dt"] = dt
+                        elif step_model == "neon":
+                            session_data["has_neon"] = True
+                            if dt and (not session_data["first_neon_dt"] or dt < session_data["first_neon_dt"]):
+                                session_data["first_neon_dt"] = dt
+                        elif step_model == "carbon":
+                            session_data["has_carbon"] = True
+                            if dt and (not session_data["first_carbon_dt"] or dt < session_data["first_carbon_dt"]):
+                                session_data["first_carbon_dt"] = dt
+                        elif step_model == "pro":
+                            session_data["has_pro"] = True
+                        elif step_model == "flash_sub":
+                            session_data["has_flash_sub"] = True
+                        elif step_model == "opus":
+                            session_data["has_opus"] = True
+                        elif step_model == "sonnet":
+                            session_data["has_sonnet"] = True
                         session_data["total_input_tokens"] += in_tok
                         session_data["total_output_tokens"] += out_tok
                         session_data["total_cached_tokens"] += cache_tok
@@ -1954,8 +1975,8 @@ def generate_html_report(sessions, pricing, output_path=None):
         sess_cnt = len(st['sessions']) if isinstance(st['sessions'], set) else st['sessions']
         c = calculate_costs(st["in"], st["out"], st["cache"], pricing)
         m_roi_real = (pt["real_cost"] / sub_eur * 100) if sub_eur > 0 else 0
-        is_reconstructed = (m_key in ["2026-08", "2026-09"])
-        badge_reg = '<span class="badge" style="background: rgba(250, 204, 21, 0.15); color: var(--yellow);">Reconstruido (97%)</span>' if is_reconstructed else '<span class="badge badge-success">Telemetría Nativa</span>'
+        is_db_proto = (m_key in ["2026-08", "2026-09"])
+        badge_reg = '<span class="badge badge-ws">Telemetría Protobuf DB</span>' if is_db_proto else '<span class="badge badge-success">Telemetría Nativa</span>'
 
         monthly_rows.append(f"""
         <tr>
